@@ -461,36 +461,49 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            const driftReport = JSON.parse(fs.readFileSync('terraform/drift-report.json', 'utf8'));
+            const reportPath = 'terraform/drift-report.json';
 
-            if (driftReport.summary.total_changed > 0) {
-              await github.rest.issues.create({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                title: '⚠️ Infrastructure Drift Detected',
-                body: `## Drift Detection Alert
+            // 1. Check if the report file actually exists
+            if (!fs.existsSync(reportPath)) {
+              console.log('⚠️ Drift report not found. Skipping issue creation.');
+              return;
+            }
 
-                **Drift detected in AWS infrastructure!**
+            // 2. Read and parse the file safely
+            try {
+              const driftReport = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
 
-                **Summary:**
-                - Resources with drift: ${driftReport.summary.total_changed}
-                - Total managed resources: ${driftReport.summary.total_managed}
-                - Unmanaged resources: ${driftReport.summary.total_unmanaged}
+              if (driftReport.summary.total_changed > 0) {
+                await github.rest.issues.create({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  title: '⚠️ Infrastructure Drift Detected',
+                  body: `## Drift Detection Alert
 
-                **Action Required:**
-                1. Review the [workflow run](${context.payload.repository.html_url}/actions/runs/${context.runId})
-                2. Download the drift report artifact
-                3. Choose remediation strategy:
-                   - **Revert in AWS:** Manual fix in AWS Console
-                   - **Update Terraform:** Accept change, update IaC
-                   - **Re-apply Terraform:** Force infrastructure to match state
+                  **Drift detected in AWS infrastructure!**
 
-                **Workflow:** ${context.workflow}
-                **Run ID:** ${context.runId}
-                **Triggered by:** ${context.actor}
-                `,
-                labels: ['drift-detection', 'security', 'infrastructure']
-              });
+                  **Summary:**
+                  - Resources with drift: ${driftReport.summary.total_changed}
+                  - Total managed resources: ${driftReport.summary.total_managed}
+                  - Unmanaged resources: ${driftReport.summary.total_unmanaged}
+
+                  **Action Required:**
+                  1. Review the [workflow run](${context.payload.repository.html_url}/actions/runs/${context.runId})
+                  2. Download the drift report artifact
+                  3. Choose remediation strategy:
+                     - **Revert in AWS:** Manual fix in AWS Console
+                     - **Update Terraform:** Accept change, update IaC
+                     - **Re-apply Terraform:** Force infrastructure to match state
+
+                  **Workflow:** ${context.workflow}
+                  **Run ID:** ${context.runId}
+                  **Triggered by:** ${context.actor}
+                  `,
+                  labels: ['drift-detection', 'security', 'infrastructure']
+                });
+              }
+            } catch (error) {
+              console.log('Error parsing drift report: ' + error.message);
             }
 
   # ===========================================================================
