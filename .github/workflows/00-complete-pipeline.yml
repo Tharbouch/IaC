@@ -201,7 +201,7 @@ jobs:
       - name: Generate Terraform Plan JSON
         working-directory: terraform
         run: |
-          terraform init -backend=false
+          terraform init -reconfigure
           terraform plan -out=tfplan.binary
           terraform show -json tfplan.binary > tfplan.json
 
@@ -296,7 +296,7 @@ jobs:
       # -----------------------------------------------------------------------
       - name: Terraform Init
         working-directory: terraform
-        run: terraform init
+        run: terraform init -reconfigure
 
       # -----------------------------------------------------------------------
       # Terraform Plan
@@ -396,7 +396,7 @@ jobs:
 
       - name: Terraform Init
         working-directory: terraform
-        run: terraform init
+        run: terraform init -reconfigure
 
       # -----------------------------------------------------------------------
       # Run Drift Detection
