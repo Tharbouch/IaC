@@ -16,13 +16,16 @@ terraform {
   }
 
   # Backend configuration (where Terraform state is stored)
+  # Commented out for now - we'll use local state for simplicity
   # In production, you'd use remote state (S3 + DynamoDB)
-  backend "s3" {
-    bucket         = "my-terraform-bucket"
-    region         = "us-east-1"
-    encrypt        = true
-    dynamodb_table = "terraform-state-lock"
-  }
+
+  # backend "s3" {
+  #   bucket         = "my-terraform-state-bucket"
+  #   key            = "devsecops/terraform.tfstate"
+  #   region         = "us-east-1"
+  #   encrypt        = true
+  #   dynamodb_table = "terraform-state-lock"
+  # }
 }
 
 # Configure the AWS Provider
