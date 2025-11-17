@@ -1,0 +1,287 @@
+# Gitleaks Configuration
+# Purpose: Configure secret detection rules and patterns
+# Phase: 1 (Pre-Commit Security Validation)
+#
+# What is Gitleaks?
+# - Scans code for hardcoded secrets, API keys, passwords
+# - Prevents accidental exposure of sensitive credentials
+# - Uses regex patterns and entropy analysis
+
+# Documentation: https://github.com/gitleaks/gitleaks
+
+# ==============================================================================
+# GENERAL SETTINGS
+# ==============================================================================
+
+# Title shown in reports
+title = "Gitleaks - DevSecOps Thesis Project"
+
+# Extend default config (includes 100+ built-in rules)
+# Set to false to use only custom rules defined below
+[extend]
+useDefault = true
+
+# ==============================================================================
+# CUSTOM RULES
+# ==============================================================================
+
+# Rule: AWS Access Key ID
+[[rules]]
+id = "aws-access-key-id"
+description = "AWS Access Key ID (AKIA...)"
+regex = '''(?i)(AKIA[0-9A-Z]{16})'''
+keywords = [
+    "AKIA",
+]
+tags = ["aws", "credentials"]
+
+# Rule: AWS Secret Access Key
+[[rules]]
+id = "aws-secret-access-key"
+description = "AWS Secret Access Key"
+regex = '''(?i)aws(.{0,20})?['\"][0-9a-zA-Z\/+]{40}['\"]'''
+keywords = [
+    "aws_secret",
+    "aws secret",
+    "aws_secret_access_key",
+]
+tags = ["aws", "credentials"]
+
+# Rule: AWS Account ID
+[[rules]]
+id = "aws-account-id"
+description = "AWS Account ID"
+regex = '''(?i)aws_account_id\s*=\s*['\"]?[0-9]{12}['\"]?'''
+keywords = [
+    "aws_account_id",
+]
+tags = ["aws", "account"]
+
+# Rule: GitHub Personal Access Token
+[[rules]]
+id = "github-pat"
+description = "GitHub Personal Access Token"
+regex = '''ghp_[0-9a-zA-Z]{36}'''
+keywords = [
+    "ghp_",
+]
+tags = ["github", "token"]
+
+# Rule: Generic API Key
+[[rules]]
+id = "generic-api-key"
+description = "Generic API Key"
+regex = '''(?i)(api[_-]?key|apikey|api[_-]?token)\s*[=:]\s*['\"]?[a-zA-Z0-9_\-]{20,}['\"]?'''
+keywords = [
+    "api_key",
+    "apikey",
+    "api_token",
+]
+tags = ["api", "key"]
+
+# Rule: Private SSH Key
+[[rules]]
+id = "ssh-private-key"
+description = "SSH Private Key"
+regex = '''-----BEGIN (RSA|DSA|EC|OPENSSH) PRIVATE KEY-----'''
+keywords = [
+    "BEGIN RSA PRIVATE KEY",
+    "BEGIN DSA PRIVATE KEY",
+    "BEGIN EC PRIVATE KEY",
+    "BEGIN OPENSSH PRIVATE KEY",
+]
+tags = ["ssh", "private-key"]
+
+# Rule: Database Connection String
+[[rules]]
+id = "database-connection-string"
+description = "Database Connection String"
+regex = '''(?i)(postgres|mysql|mongodb):\/\/[a-zA-Z0-9_\-]+:[a-zA-Z0-9_\-]+@[a-zA-Z0-9_\-\.]+:[0-9]{1,5}\/[a-zA-Z0-9_\-]+'''
+keywords = [
+    "postgres://",
+    "mysql://",
+    "mongodb://",
+]
+tags = ["database", "credentials"]
+
+# Rule: Generic Password
+[[rules]]
+id = "generic-password"
+description = "Generic Password in Configuration"
+regex = '''(?i)password\s*[=:]\s*['\"][^'\"]{8,}['\"]'''
+keywords = [
+    "password",
+]
+tags = ["password"]
+
+# Rule: Terraform AWS Provider Credentials (CRITICAL)
+[[rules]]
+id = "terraform-aws-hardcoded-credentials"
+description = "Hardcoded AWS credentials in Terraform provider"
+regex = '''(?i)(access_key|secret_key)\s*=\s*['\"][A-Za-z0-9/+=]{16,}['\"]'''
+keywords = [
+    "access_key",
+    "secret_key",
+]
+tags = ["terraform", "aws", "critical"]
+
+# ==============================================================================
+# ALLOWLIST (EXCEPTIONS)
+# ==============================================================================
+
+# Files to always ignore
+[allowlist]
+description = "Allowlist for false positives and test files"
+paths = [
+    # Don't scan dependencies
+    '''node_modules/''',
+    '''vendor/''',
+    '''.terraform/''',
+
+    # Don't scan generated files (using regex, not glob)
+    '''.*\.tfstate$''',
+    '''.*\.tfstate\.backup$''',
+
+    # Don't scan documentation (may contain example secrets)
+    '''PREREQUISITES.md''',
+    '''TOOLS-EXPLAINED.md''',
+]
+
+# Specific strings to ignore (known false positives)
+regexes = [
+    # Ignore example AWS keys from AWS documentation
+    '''AKIAIOSFODNN7EXAMPLE''',
+    '''wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY''',
+
+    # Ignore placeholder values
+    '''(?i)your[_-]?api[_-]?key[_-]?here''',
+    '''(?i)change[_-]?me''',
+    '''(?i)example''',
+    '''(?i)placeholder''',
+]
+
+# Commits to ignore (by commit SHA)
+commits = []
+
+# ==============================================================================
+# ENTROPY DETECTION
+# ==============================================================================
+
+# Gitleaks can detect secrets based on randomness (entropy)
+# High entropy strings are likely to be secrets
+
+# This feature is experimental and may cause false positives
+# Uncomment to enable:
+
+# [[rules]]
+# id = "high-entropy-string"
+# description = "High entropy string (possible secret)"
+# regex = '''[A-Za-z0-9+/]{40,}'''
+# entropy = 4.5  # Minimum entropy threshold
+# tags = ["entropy"]
+
+# ==============================================================================
+# TESTING INSTRUCTIONS
+# ==============================================================================
+
+# Test Gitleaks configuration:
+#   gitleaks detect --source . --config .gitleaks.toml --verbose
+#
+# Test specific file:
+#   gitleaks detect --source tests/vulnerable/hardcoded-secret.tf --config .gitleaks.toml
+#
+# Expected output for hardcoded-secret.tf:
+#   ○
+#   │╲│
+#   │ ○
+#   ○ ░
+#   ░    gitleaks
+#
+#   Finding:     line 16
+#   Secret:      AKIAIOSFODNN7EXAMPLE
+#   RuleID:      aws-access-key-id
+#   File:        tests/vulnerable/hardcoded-secret.tf
+#
+# Test with pre-commit:
+#   pre-commit run gitleaks --all-files
+
+# ==============================================================================
+# INTEGRATION WITH PRE-COMMIT
+# ==============================================================================
+
+# Gitleaks runs automatically via pre-commit hooks
+# See .pre-commit-config.yaml for configuration
+
+# When you commit code with secrets:
+# 1. Gitleaks scans staged files
+# 2. Detects secrets based on rules above
+# 3. BLOCKS the commit
+# 4. Shows which files and lines contain secrets
+# 5. You must remove secrets before committing
+
+# ==============================================================================
+# FALSE POSITIVES
+# ==============================================================================
+
+# If Gitleaks flags something that's NOT a secret:
+#
+# Option 1: Add to allowlist.regexes above
+# Option 2: Add inline comment in code:
+#   my_var = "AKIAEXAMPLE"  # gitleaks:allow
+# Option 3: Update the rule to be more specific
+
+# ==============================================================================
+# FOR YOUR THESIS
+# ==============================================================================
+
+# Document these test cases:
+#
+# 1. TEST: Hardcoded AWS Access Key
+#    File: tests/vulnerable/hardcoded-secret.tf
+#    Expected: Gitleaks detects and blocks commit
+#    Rule: aws-access-key-id
+#
+# 2. TEST: Hardcoded password in Terraform variable
+#    Code: variable "password" { default = "supersecret123" }
+#    Expected: Gitleaks detects and blocks commit
+#    Rule: generic-password
+#
+# 3. TEST: SSH private key in repository
+#    File: id_rsa (with private key content)
+#    Expected: Gitleaks detects and blocks commit
+#    Rule: ssh-private-key
+#
+# 4. TEST: Compliant code (no secrets)
+#    File: terraform/main.tf
+#    Expected: Gitleaks passes, commit succeeds
+
+# ==============================================================================
+# METRICS FOR THESIS ANALYSIS
+# ==============================================================================
+
+# Collect these metrics:
+# - Number of secret types detected by rule
+# - False positive rate
+# - True positive rate
+# - Time to scan repository
+# - Integration overhead (pre-commit execution time)
+
+# To generate a report:
+#   gitleaks detect --source . --report-path gitleaks-report.json --report-format json
+
+# ==============================================================================
+# SECURITY BEST PRACTICES
+# ==============================================================================
+
+# 1. NEVER commit secrets to Git
+# 2. Use environment variables for credentials
+# 3. Use AWS credentials file (~/.aws/credentials)
+# 4. Use secret management services (AWS Secrets Manager, HashiCorp Vault)
+# 5. Rotate credentials if accidentally committed
+# 6. Use .gitignore for sensitive files
+
+# If you accidentally commit a secret:
+# 1. Rotate the credential immediately
+# 2. Remove from Git history (git filter-branch or BFG Repo-Cleaner)
+# 3. Force push (if safe to do so)
+# 4. Notify security team
