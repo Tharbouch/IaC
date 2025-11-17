@@ -31,7 +31,7 @@ variable "environment" {
 variable "owner_email" {
   description = "Email address of the resource owner (for tagging)"
   type        = string
-  default     = "email@example.com"
+  default     = "student@university.edu"
 
   validation {
     condition     = can(regex("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$", var.owner_email))
