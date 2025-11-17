@@ -1,0 +1,83 @@
+# Example Terraform Variables File
+# Purpose: Shows example values for variables
+#
+# INSTRUCTIONS:
+# 1. Copy this file: cp terraform.tfvars.example terraform.tfvars
+# 2. Edit terraform.tfvars with your actual values
+# 3. NEVER commit terraform.tfvars to Git (it's in .gitignore)
+
+# ============================================================================
+# GENERAL CONFIGURATION
+# ============================================================================
+
+# AWS region (us-east-1 recommended for Free Tier)
+aws_region = "us-east-1"
+
+# Environment name
+environment = "dev"
+
+# Your email address (for resource tagging)
+owner_email = "your.email@university.edu"
+
+# Project name (used in resource naming)
+project_name = "devsecops-thesis"
+
+# ============================================================================
+# S3 CONFIGURATION
+# ============================================================================
+
+# S3 bucket name (leave empty for auto-generation, or specify a unique name)
+# Must be globally unique across all AWS accounts!
+s3_bucket_name = ""  # Will auto-generate: devsecops-thesis-dev-123456789012
+
+# Enable S3 versioning (recommended)
+enable_s3_versioning = true
+
+# Enable S3 encryption (highly recommended for security)
+enable_s3_encryption = true
+
+# ============================================================================
+# EC2 CONFIGURATION
+# ============================================================================
+
+# EC2 instance type (t2.micro is Free Tier eligible)
+ec2_instance_type = "t2.micro"
+
+# EC2 instance name
+ec2_instance_name = "devsecops-test-server"
+
+# Enable detailed monitoring (costs extra - keep false for Free Tier)
+enable_ec2_monitoring = false
+
+# ============================================================================
+# NETWORKING CONFIGURATION
+# ============================================================================
+
+# VPC CIDR block
+vpc_cidr = "10.0.0.0/16"
+
+# Public subnet CIDR block
+public_subnet_cidr = "10.0.1.0/24"
+
+# CIDR block allowed to SSH to the instance
+# SECURITY WARNING: 0.0.0.0/0 allows SSH from anywhere (INSECURE!)
+#
+# For better security, replace with your IP:
+# allowed_ssh_cidr = "YOUR.IP.ADDRESS/32"
+#
+# To find your IP: curl ifconfig.me
+#
+# For this thesis project, we intentionally use 0.0.0.0/0 to test
+# if our security scanners detect this misconfiguration!
+allowed_ssh_cidr = "0.0.0.0/0"
+
+# ============================================================================
+# ADDITIONAL TAGS
+# ============================================================================
+
+# Additional tags to apply to all resources
+additional_tags = {
+  CostCenter = "Research"
+  Department = "Computer Science"
+  Thesis     = "DevSecOps-IaC"
+}
