@@ -1,0 +1,287 @@
+# GitHub Actions Workflow: Security Scanning
+# Purpose: Run SAST tools (Checkov + Trivy) on pull requests
+# Phase: 2 (CI Security Gate)
+#
+# What this does:
+# - Runs automatically on pull requests
+# - Scans Terraform code for security issues
+# - Blocks PR if critical/high severity issues found
+# - Provides detailed scan reports
+
+name: Security Scan (SAST)
+
+# ==============================================================================
+# TRIGGER CONFIGURATION
+# ==============================================================================
+
+on:
+  # Trigger on pull requests to main/master
+  pull_request:
+    branches:
+      - main
+      - master
+    paths:
+      - 'terraform/**'
+      - 'tests/**'
+      - '.github/workflows/01-security-scan.yml'
+
+  # Allow manual triggering from GitHub UI
+  workflow_dispatch:
+
+  # Trigger on push to feature branches (optional)
+  push:
+    branches-ignore:
+      - main
+      - master
+    paths:
+      - 'terraform/**'
+      - 'tests/**'
+
+# ==============================================================================
+# PERMISSIONS
+# ==============================================================================
+
+permissions:
+  contents: read           # Read repository contents
+  pull-requests: write     # Comment on PRs
+  security-events: write   # Upload to GitHub Security tab
+
+# ==============================================================================
+# JOB: CHECKOV SCAN
+# ==============================================================================
+
+jobs:
+  checkov:
+    name: Checkov Security Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      # Step 1: Checkout code
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Step 2: Set up Python (Checkov requires Python)
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # Step 3: Install Checkov
+      - name: Install Checkov
+        run: pip install checkov
+
+      # Step 4: Run Checkov scan
+      - name: Run Checkov scan
+        id: checkov
+        run: |
+          echo "Running Checkov security scan..."
+          checkov --directory terraform \
+            --framework terraform \
+            --output cli \
+            --output json \
+            --output-file-path . \
+            --soft-fail \
+            --skip-check CKV_AWS_18
+        continue-on-error: true
+
+      # Step 5: Upload Checkov results
+      - name: Upload Checkov results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: checkov-results
+          path: results_json.json
+
+      # Step 6: Comment on PR with results
+      - name: Comment Checkov results on PR
+        uses: actions/github-script@v7
+        if: github.event_name == 'pull_request'
+        with:
+          script: |
+            const fs = require('fs');
+            const results = JSON.parse(fs.readFileSync('results_json.json', 'utf8'));
+
+            const passed = results.summary.passed || 0;
+            const failed = results.summary.failed || 0;
+            const skipped = results.summary.skipped || 0;
+
+            const comment = `## Checkov Security Scan Results
+
+            | Status | Count |
+            |--------|-------|
+            | ✅ Passed | ${passed} |
+            | ❌ Failed | ${failed} |
+            | ⏭️ Skipped | ${skipped} |
+
+            ${failed > 0 ? '⚠️ **Security issues detected!** Please review and fix before merging.' : '✅ **All security checks passed!**'}
+
+            <details>
+            <summary>View detailed results</summary>
+
+            \`\`\`
+            See artifact 'checkov-results' for full report
+            \`\`\`
+            </details>
+            `;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+
+      # Step 7: Fail if critical issues found
+      - name: Check for failures
+        run: |
+          if [ -f results_json.json ]; then
+            failed=$(jq '.summary.failed' results_json.json)
+            if [ "$failed" -gt 0 ]; then
+              echo "❌ Checkov found $failed failed checks"
+              echo "Review the results and fix security issues"
+              exit 1
+            fi
+          fi
+
+  # ==============================================================================
+  # JOB: TRIVY SCAN
+  # ==============================================================================
+
+  trivy:
+    name: Trivy Security Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      # Step 1: Checkout code
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Step 2: Run Trivy scan
+      - name: Run Trivy scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'config'
+          scan-ref: 'terraform'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH,MEDIUM'
+          exit-code: '0'  # Don't fail the job, we'll check manually
+
+      # Step 3: Upload Trivy results to GitHub Security tab
+      - name: Upload Trivy results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+      # Step 4: Run Trivy with JSON output for artifacts
+      - name: Run Trivy scan (JSON output)
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'config'
+          scan-ref: 'terraform'
+          format: 'json'
+          output: 'trivy-results.json'
+          severity: 'CRITICAL,HIGH,MEDIUM'
+
+      # Step 5: Upload Trivy results
+      - name: Upload Trivy results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trivy-results
+          path: trivy-results.json
+
+      # Step 6: Parse and display results
+      - name: Parse Trivy results
+        run: |
+          if [ -f trivy-results.json ]; then
+            echo "📊 Trivy Scan Summary:"
+            jq -r '.Results[] | select(.Misconfigurations) | .Misconfigurations[] | "[\(.Severity)] \(.ID): \(.Title)"' trivy-results.json | head -20
+          fi
+
+      # Step 7: Fail if critical/high issues found
+      - name: Check Trivy results
+        run: |
+          if [ -f trivy-results.json ]; then
+            critical=$(jq '[.Results[]?.Misconfigurations[]? | select(.Severity=="CRITICAL")] | length' trivy-results.json)
+            high=$(jq '[.Results[]?.Misconfigurations[]? | select(.Severity=="HIGH")] | length' trivy-results.json)
+
+            echo "Critical issues: $critical"
+            echo "High severity issues: $high"
+
+            if [ "$critical" -gt 0 ] || [ "$high" -gt 0 ]; then
+              echo "❌ Trivy found security issues"
+              exit 1
+            fi
+          fi
+
+  # ==============================================================================
+  # JOB: SUMMARY
+  # ==============================================================================
+
+  security-summary:
+    name: Security Scan Summary
+    runs-on: ubuntu-latest
+    needs: [checkov, trivy]
+    if: always()
+
+    steps:
+      - name: Check scan results
+        run: |
+          if [ "${{ needs.checkov.result }}" == "failure" ] || [ "${{ needs.trivy.result }}" == "failure" ]; then
+            echo "❌ Security scans failed"
+            echo ""
+            echo "Checkov: ${{ needs.checkov.result }}"
+            echo "Trivy: ${{ needs.trivy.result }}"
+            echo ""
+            echo "Please review the scan results and fix security issues before merging."
+            exit 1
+          else
+            echo "✅ All security scans passed!"
+          fi
+
+# ==============================================================================
+# TESTING INSTRUCTIONS (For Thesis)
+# ==============================================================================
+
+# 1. Create a pull request with vulnerable code:
+#    - Add tests/vulnerable/unencrypted-s3.tf to your PR
+#    - Push to GitHub
+#
+# 2. This workflow will run automatically
+#
+# 3. Expected behavior:
+#    - Checkov detects missing encryption
+#    - Trivy detects missing encryption
+#    - Workflow FAILS
+#    - PR cannot be merged
+#
+# 4. Screenshot for thesis:
+#    - GitHub Actions tab showing failed workflow
+#    - PR comments with scan results
+#    - Security tab showing vulnerabilities
+#
+# 5. Fix the issues:
+#    - Add encryption configuration
+#    - Push changes
+#    - Workflow runs again
+#    - All checks pass
+#    - PR can be merged
+
+# ==============================================================================
+# CUSTOMIZATION
+# ==============================================================================
+
+# To adjust severity levels:
+# - Change 'severity' parameter in Trivy steps
+# - Modify Checkov skip-check list
+# - Adjust fail conditions in check steps
+
+# To add more checks:
+# - Add additional jobs (e.g., git-secrets, semgrep)
+# - Run tools in parallel for faster feedback
+
+# To change trigger conditions:
+# - Modify 'on' section at top of file
+# - Add/remove branches or paths

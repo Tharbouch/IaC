@@ -1,0 +1,199 @@
+# DevSecOps Framework - Git Ignore File
+# Purpose: Prevent sensitive and unnecessary files from being committed to Git
+
+# ============================================================================
+# SECURITY - CRITICAL: Never commit these files!
+# ============================================================================
+
+# AWS Credentials
+**/.aws/
+**/credentials
+**/*.pem
+**/*.key
+*.pem
+*.key
+
+# Terraform variable files (may contain secrets)
+*.tfvars
+!terraform.tfvars.example  # Allow example file
+terraform.tfvars.json
+*.auto.tfvars
+
+# Environment files
+.env
+.env.*
+*.env
+
+# Secret files
+secrets/
+**/secrets/
+*.secret
+*.secrets
+
+# SSH keys
+id_rsa
+id_rsa.pub
+*.ppk
+
+# ============================================================================
+# TERRAFORM
+# ============================================================================
+
+# Terraform state files (may contain sensitive data)
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+.terraform.tfstate.lock.info
+
+# Terraform directory
+.terraform/
+.terraform.lock.hcl
+
+# Crash log files
+crash.log
+crash.*.log
+
+# Terraform plan files
+*.tfplan
+tfplan*
+plan.out
+
+# Terraform override files
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# ============================================================================
+# SECURITY SCAN RESULTS
+# ============================================================================
+
+# Checkov results
+checkov-results.json
+results_*.json
+
+# Trivy results
+trivy-results.json
+
+# Gitleaks report
+gitleaks-report.json
+gitleaks.log
+
+# Driftctl results
+driftctl.json
+
+# ============================================================================
+# PYTHON
+# ============================================================================
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+
+# ============================================================================
+# EDITORS & IDEs
+# ============================================================================
+
+# Visual Studio Code
+.vscode/
+*.code-workspace
+
+# IntelliJ IDEA
+.idea/
+*.iml
+
+# Vim
+*.swp
+*.swo
+*~
+
+# Emacs
+*~
+\#*\#
+/.emacs.desktop
+/.emacs.desktop.lock
+
+# ============================================================================
+# OPERATING SYSTEM
+# ============================================================================
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+.directory
+
+# ============================================================================
+# TEMPORARY FILES
+# ============================================================================
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Backup files
+*.bak
+*.backup
+*~
+
+# ============================================================================
+# NODE / NPM (if using any JavaScript tools)
+# ============================================================================
+
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ============================================================================
+# ARCHIVES
+# ============================================================================
+
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.rar
+
+# ============================================================================
+# ALLOWED FILES (explicitly include these)
+# ============================================================================
+
+# We want to commit example/template files
+!*.example
+!*.template
+
+# Documentation should be committed
+!docs/**
+
+# Test files should be committed
+!tests/**
+
+# ============================================================================
+# NOTES
+# ============================================================================
+
+# Personal notes that shouldn't be in the repo
+NOTES.md
+TODO.md
+scratch/
