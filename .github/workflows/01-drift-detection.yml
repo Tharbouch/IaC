@@ -1,0 +1,435 @@
+# GitHub Actions Workflow: Drift Detection
+# Purpose: Detect configuration drift between Terraform and AWS
+# Phase: 4 (Continuous Monitoring)
+#
+# What this does:
+# - Runs on a schedule (daily)
+# - Compares Terraform state with actual AWS resources
+# - Detects manual changes made outside Terraform
+# - Alerts on drift detected
+
+name: Drift Detection
+
+# ==============================================================================
+# TRIGGER CONFIGURATION
+# ==============================================================================
+
+on:
+  # Run on a schedule (daily at 9 AM UTC)
+  schedule:
+    - cron: '0 */6 * * *'  # Every day at 9:00 AM UTC
+
+  # Manual trigger
+  workflow_dispatch:
+
+  # Run after deployments
+  workflow_run:
+    workflows: ["Deploy to AWS"]
+    types:
+      - completed
+
+# ==============================================================================
+# PERMISSIONS
+# ==============================================================================
+
+permissions:
+  contents: read
+  issues: write  # To create issues for drift alerts
+
+# ==============================================================================
+# ENVIRONMENT VARIABLES
+# ==============================================================================
+
+env:
+  AWS_REGION: 'us-east-1'
+  TF_VERSION: '1.6.0'
+
+# ==============================================================================
+# JOBS
+# ==============================================================================
+
+jobs:
+  # ============================================================================
+  # JOB 1: DRIFTCTL SCAN
+  # ============================================================================
+
+  driftctl-scan:
+    name: Driftctl Drift Detection
+    runs-on: ubuntu-latest
+
+    steps:
+      # Step 1: Checkout code
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Step 2: Configure AWS credentials
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # Step 3: Setup Terraform (needed for state file)
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      # Step 4: Terraform Init
+      - name: Terraform Init
+        run: |
+          cd terraform
+          terraform init
+
+      # Step 5: Install Driftctl
+      - name: Install Driftctl
+        run: |
+          curl -L https://github.com/snyk/driftctl/releases/latest/download/driftctl_linux_amd64 -o driftctl
+          chmod +x driftctl
+          sudo mv driftctl /usr/local/bin/
+          driftctl version
+
+      # Step 6: Run Driftctl scan
+      - name: Run Driftctl Scan
+        id: driftctl
+        run: |
+          cd terraform
+
+          echo "Running Driftctl to detect infrastructure drift..."
+
+          # Run driftctl with JSON output
+          driftctl scan \
+            --from tfstate://terraform.tfstate \
+            --output json://drift-results.json \
+            --output console || true
+
+          # Check if drift was detected
+          if [ -f drift-results.json ]; then
+            unmanaged=$(jq '.summary.total_unmanaged' drift-results.json)
+            missing=$(jq '.summary.total_missing' drift-results.json)
+            drift=$(jq '.summary.total_managed_drift' drift-results.json)
+
+            echo "unmanaged=$unmanaged" >> $GITHUB_OUTPUT
+            echo "missing=$missing" >> $GITHUB_OUTPUT
+            echo "drift=$drift" >> $GITHUB_OUTPUT
+
+            total_drift=$((unmanaged + missing + drift))
+            echo "total_drift=$total_drift" >> $GITHUB_OUTPUT
+
+            if [ $total_drift -gt 0 ]; then
+              echo "drift_detected=true" >> $GITHUB_OUTPUT
+            else
+              echo "drift_detected=false" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+      # Step 7: Generate drift report
+      - name: Generate Drift Report
+        if: always()
+        run: |
+          cd terraform
+
+          cat > drift-report.md << 'EOF'
+          # Infrastructure Drift Detection Report
+
+          **Scan Date:** $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+
+          ## Summary
+
+          | Category | Count |
+          |----------|-------|
+          | Unmanaged Resources | ${{ steps.driftctl.outputs.unmanaged || 0 }} |
+          | Missing Resources | ${{ steps.driftctl.outputs.missing || 0 }} |
+          | Drifted Resources | ${{ steps.driftctl.outputs.drift || 0 }} |
+          | **Total Drift** | **${{ steps.driftctl.outputs.total_drift || 0 }}** |
+
+          EOF
+
+          if [ "${{ steps.driftctl.outputs.drift_detected }}" == "true" ]; then
+            cat >> drift-report.md << 'EOF'
+
+          ## ⚠️ Drift Detected!
+
+          Infrastructure drift has been detected. This means resources have been modified outside of Terraform.
+
+          **What is drift?**
+          - **Unmanaged:** Resources exist in AWS but not in Terraform
+          - **Missing:** Resources defined in Terraform but don't exist in AWS
+          - **Drifted:** Resources modified manually (not matching Terraform)
+
+          **Recommended Actions:**
+          1. Review the drift details below
+          2. Determine if changes were intentional
+          3. Update Terraform to match AWS, OR
+          4. Revert AWS changes to match Terraform
+
+          <details>
+          <summary>View Detailed Drift Report</summary>
+
+          \`\`\`json
+          EOF
+
+            if [ -f drift-results.json ]; then
+              cat drift-results.json >> drift-report.md
+            fi
+
+            cat >> drift-report.md << 'EOF'
+          \`\`\`
+
+          </details>
+          EOF
+          else
+            cat >> drift-report.md << 'EOF'
+
+          ## ✅ No Drift Detected
+
+          All infrastructure resources match Terraform configuration.
+          EOF
+          fi
+
+      # Step 8: Display summary
+      - name: Display Drift Summary
+        run: |
+          cat terraform/drift-report.md >> $GITHUB_STEP_SUMMARY
+
+      # Step 9: Upload drift results
+      - name: Upload Drift Results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drift-detection-results
+          path: |
+            terraform/drift-results.json
+            terraform/drift-report.md
+
+      # Step 10: Create GitHub issue if drift detected
+      - name: Create Issue for Drift
+        if: steps.driftctl.outputs.drift_detected == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const report = fs.readFileSync('terraform/drift-report.md', 'utf8');
+
+            const issue = await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: '⚠️ Infrastructure Drift Detected',
+              body: report,
+              labels: ['drift-detection', 'infrastructure', 'security']
+            });
+
+            console.log(`Created issue #${issue.data.number}`);
+
+  # ============================================================================
+  # JOB 2: TERRAFORM DRIFT CHECK
+  # ============================================================================
+
+  terraform-drift:
+    name: Terraform Drift Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Terraform Init
+        run: |
+          cd terraform
+          terraform init
+
+      - name: Terraform Refresh
+        run: |
+          cd terraform
+
+          if [ ! -f terraform.tfvars ]; then
+            cp terraform.tfvars.example terraform.tfvars
+          fi
+
+          terraform refresh
+
+      - name: Terraform Plan (Detect Changes)
+        id: plan
+        run: |
+          cd terraform
+
+          terraform plan -detailed-exitcode -no-color | tee plan-drift.txt
+
+          exitcode=$?
+          echo "exitcode=$exitcode" >> $GITHUB_OUTPUT
+
+          # Exit code 2 means changes detected (drift)
+          if [ $exitcode -eq 2 ]; then
+            echo "drift_detected=true" >> $GITHUB_OUTPUT
+          else
+            echo "drift_detected=false" >> $GITHUB_OUTPUT
+          fi
+        continue-on-error: true
+
+      - name: Report Terraform Drift
+        if: steps.plan.outputs.drift_detected == 'true'
+        run: |
+          echo "## ⚠️ Terraform Detected Configuration Drift" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Terraform plan shows differences between code and actual infrastructure:" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          head -50 terraform/plan-drift.txt >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+
+  # ============================================================================
+  # JOB 3: COMPLIANCE SCAN
+  # ============================================================================
+
+  compliance-scan:
+    name: Runtime Compliance Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Install Checkov
+        run: pip install checkov
+
+      - name: Run Checkov on AWS Account
+        run: |
+          echo "Running compliance scan on deployed AWS resources..."
+
+          # Scan live AWS resources (not just code)
+          checkov --framework aws \
+            --output cli \
+            --output json \
+            --output-file-path . \
+            --soft-fail || true
+
+      - name: Upload Compliance Results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: compliance-scan-results
+          path: results_json.json
+
+# ==============================================================================
+# TESTING INSTRUCTIONS (For Thesis)
+# ==============================================================================
+
+# TEST SCENARIO: Create Intentional Drift
+#
+# 1. Deploy infrastructure using Terraform
+#
+# 2. Manually modify a resource in AWS Console:
+#    Option A: Modify S3 bucket
+#      - Go to S3 in AWS Console
+#      - Find your bucket (devsecops-thesis-...)
+#      - Disable versioning OR
+#      - Add a tag OR
+#      - Modify encryption settings
+#
+#    Option B: Modify EC2 instance
+#      - Go to EC2 in AWS Console
+#      - Find your instance
+#      - Add/remove tags OR
+#      - Modify security group
+#
+# 3. Trigger drift detection workflow:
+#    - Go to Actions tab
+#    - Select "Drift Detection"
+#    - Click "Run workflow"
+#
+# 4. Expected results:
+#    - Driftctl detects the modification
+#    - Terraform plan shows changes
+#    - GitHub issue created
+#    - Drift report generated
+#
+# 5. Screenshots for thesis:
+#    📸 AWS Console showing manual change
+#    📸 Drift detection workflow results
+#    📸 Drift report with differences
+#    📸 GitHub issue created
+#
+# 6. Remediation options:
+#    Option A: Update Terraform to match AWS
+#      - Modify terraform code
+#      - Run terraform plan
+#      - Apply changes
+#
+#    Option B: Revert AWS to match Terraform
+#      - Run terraform apply
+#      - Terraform will revert manual changes
+
+# ==============================================================================
+# DRIFT DETECTION STRATEGIES
+# ==============================================================================
+
+# STRATEGY 1: Driftctl (Comprehensive)
+# - Detects all resource types
+# - Shows unmanaged resources
+# - Detailed JSON output
+# - Best for: Complete drift analysis
+#
+# STRATEGY 2: Terraform Plan (Simple)
+# - Uses native Terraform
+# - Shows exact changes
+# - Easy to understand
+# - Best for: Quick drift check
+#
+# STRATEGY 3: AWS Config (Cloud-Native)
+# - AWS-native service
+# - Continuous monitoring
+# - Compliance rules
+# - Best for: Production environments
+#
+# For thesis: Compare all three approaches!
+
+# ==============================================================================
+# METRICS TO COLLECT
+# ==============================================================================
+
+# For your thesis analysis:
+# - Drift detection time
+# - Types of drift detected
+# - False positive rate
+# - Mean time to detect drift
+# - Mean time to remediate drift
+# - Comparison: Driftctl vs Terraform plan
+
+# ==============================================================================
+# CUSTOMIZATION
+# ==============================================================================
+
+# To change scan frequency:
+# - Modify cron schedule (line 17)
+# - Options:
+#   - '0 */6 * * *'  # Every 6 hours
+#   - '0 0 * * *'    # Daily at midnight
+#   - '0 9 * * 1'    # Weekly on Monday at 9 AM
+#
+# To add notifications:
+# - Add Slack/email notification steps
+# - Integrate with monitoring tools
+#
+# To exclude resources from drift detection:
+# - Use driftctl --driftignore flag
+# - Create .driftignore file

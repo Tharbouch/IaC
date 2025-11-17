@@ -1,0 +1,204 @@
+# Pre-commit Hooks Configuration
+# Purpose: Run security and quality checks before commits reach Git
+# Phase: 1 (Pre-Commit Security Validation)
+#
+# What is pre-commit?
+# - Framework that manages Git hooks
+# - Runs checks automatically when you run 'git commit'
+# - Prevents bad code from entering version control
+#
+# Installation:
+#   pip3 install pre-commit
+#   pre-commit install
+#
+# Usage:
+#   git add <files>
+#   git commit -m "message"  # Hooks run automatically
+#
+# Manual run:
+#   pre-commit run --all-files
+
+# ==============================================================================
+# CONFIGURATION
+# ==============================================================================
+
+# Minimum pre-commit version required
+minimum_pre_commit_version: "3.0.0"
+
+# Fail fast: stop after first failure (faster feedback)
+fail_fast: false
+
+# Default language version
+default_language_version:
+  python: python3
+
+# ==============================================================================
+# HOOK REPOSITORIES
+# ==============================================================================
+
+repos:
+  # ============================================================================
+  # HOOK SET 1: General Code Quality Checks
+  # ============================================================================
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      # Prevent committing large files (>500KB)
+      - id: check-added-large-files
+        name: Check for large files
+        args: ["--maxkb=500"]
+
+      # Ensure files end with newline
+      - id: end-of-file-fixer
+        name: Fix end of files
+
+      # Remove trailing whitespace
+      - id: trailing-whitespace
+        name: Trim trailing whitespace
+
+      # Check YAML syntax
+      - id: check-yaml
+        name: Check YAML files
+        args: ["--allow-multiple-documents"]
+
+      # Check JSON syntax
+      - id: check-json
+        name: Check JSON files
+
+      # Prevent committing to main branch directly
+      - id: no-commit-to-branch
+        name: Prevent direct commits to main
+        args: ["--branch", "main", "--branch", "master"]
+
+      # Check for merge conflict markers
+      - id: check-merge-conflict
+        name: Check for merge conflicts
+
+      # Detect private keys
+      - id: detect-private-key
+        name: Detect private keys
+        exclude: '^\.gitleaks\.toml$' # Exclude config file (false positive)
+
+  # ============================================================================
+  # HOOK SET 2: Secret Scanning with Gitleaks
+  # ============================================================================
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.18.1
+    hooks:
+      - id: gitleaks
+        name: Gitleaks - Secret Scanner
+        description: Scan for hardcoded secrets, API keys, passwords
+        entry: gitleaks protect --verbose --redact --staged
+        language: system
+
+  # ============================================================================
+  # HOOK SET 3: Terraform Checks
+  # ============================================================================
+  - repo: https://github.com/antonbabenko/pre-commit-terraform
+    rev: v1.86.0
+    hooks:
+      # Terraform format check (ensures consistent formatting)
+      - id: terraform_fmt
+        name: Terraform fmt
+        description: Format Terraform files
+
+      # Terraform validation (check syntax)
+      - id: terraform_validate
+        name: Terraform validate
+        description: Validate Terraform syntax
+        args:
+          - --hook-config=--retry-once-with-cleanup=true
+
+      # # TFLint - Terraform linter (optional)
+      # - id: terraform_tflint
+      #   name: TFLint
+      #   description: Lint Terraform files
+      #   args:
+      #     - --args=--config=__GIT_WORKING_DIR__/.tflint.hcl
+      #     - --hook-config=--delegate-chdir
+
+      # Trivy - Security scanner (replaces tfsec)
+      - id: terraform_trivy
+        name: Trivy - IaC Security Scanner
+        description: Scan Terraform for security issues
+        args:
+          - --args=--severity=CRITICAL
+          - --args=--skip-dirs="**/.terraform"
+
+  # ============================================================================
+  # HOOK SET 4: Checkov - SAST for IaC
+  # ============================================================================
+  - repo: https://github.com/bridgecrewio/checkov
+    rev: 3.1.34
+    hooks:
+      - id: checkov
+        name: Checkov - IaC Security Scanner
+        description: Scan for security and compliance issues
+        args:
+          - --soft-fail
+          - --framework=terraform
+          - --skip-check=CKV_AWS_18 # Skip S3 logging check (requires additional resources)
+        verbose: true
+# ==============================================================================
+# NOTES FOR STUDENTS
+# ==============================================================================
+
+# HOOK EXECUTION ORDER:
+# 1. General checks (large files, YAML, JSON, etc.)
+# 2. Gitleaks (secret scanning) ← CRITICAL: Blocks commits with secrets
+# 3. Terraform fmt (formatting)
+# 4. Terraform validate (syntax check)
+# 5. TFLint (linting)
+# 6. Trivy (security scanning)
+# 7. Checkov (compliance scanning)
+
+# EXPECTED BEHAVIOR:
+# - If ANY hook fails, the commit is BLOCKED
+# - Fix the issues and try committing again
+# - All hooks must pass for commit to succeed
+
+# SKIPPING HOOKS (NOT RECOMMENDED):
+# If you absolutely must skip hooks (for testing only):
+#   git commit --no-verify -m "message"
+#
+# WARNING: Never skip hooks in production!
+
+# TESTING PRE-COMMIT HOOKS:
+# Before committing, test manually:
+#   pre-commit run --all-files
+#
+# Test specific hook:
+#   pre-commit run gitleaks --all-files
+#   pre-commit run terraform_trivy --all-files
+#   pre-commit run checkov --all-files
+
+# UPDATING HOOKS:
+# Update to latest versions:
+#   pre-commit autoupdate
+
+# COMMON ISSUES:
+#
+# Issue 1: "command not found"
+# Solution: Install the required tool (gitleaks, terraform, etc.)
+#
+# Issue 2: Hook takes too long
+# Solution: Run hooks only on changed files (default behavior)
+#
+# Issue 3: False positives
+# Solution: Configure skip rules or exceptions
+
+# FOR YOUR THESIS:
+# Document these scenarios:
+# 1. Attempt to commit tests/vulnerable/hardcoded-secret.tf
+#    Expected: Gitleaks blocks the commit
+# 2. Attempt to commit unformatted Terraform
+#    Expected: terraform_fmt blocks the commit
+# 3. Attempt to commit tests/vulnerable/unencrypted-s3.tf
+#    Expected: Trivy and Checkov report security issues
+# 4. Commit compliant code
+#    Expected: All hooks pass, commit succeeds
+
+# PERFORMANCE NOTES:
+# - Hooks run in parallel when possible
+# - Only changed files are scanned (not entire repository)
+# - Typical execution time: 10-30 seconds for small changes
