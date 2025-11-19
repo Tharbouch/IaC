@@ -15,16 +15,16 @@ terraform {
     }
   }
 
-  # Backend configuration (where Terraform state is stored)
-  # In production, you'd use remote state (S3 + DynamoDB)
-
-  # backend "s3" {
-  #   bucket         = "my-terraform-state-bucket"
-  #   key            = "devsecops/terraform.tfstate"
-  #   region         = "us-east-1"
-  #   encrypt        = true
-  #   dynamodb_table = "terraform-state-lock"
-  # }
+  # Backend configuration (Remote State)
+  # CRITICAL FOR CI/CD: Stores state in S3 so GitHub Runners can see it.
+  # The bucket and table must be created MANUALLY before running Terraform.
+  backend "s3" {
+    bucket         = "devsecops-thesis-state-1763421190"
+    key            = "devsecops/terraform.tfstate"
+    region         = "us-east-1"
+    encrypt        = true
+    dynamodb_table = "terraform-state-lock"
+  }
 }
 
 # Configure the AWS Provider
