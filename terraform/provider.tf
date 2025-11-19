@@ -16,7 +16,6 @@ terraform {
   }
 
   # Backend configuration (where Terraform state is stored)
-  # Commented out for now - we'll use local state for simplicity
   # In production, you'd use remote state (S3 + DynamoDB)
 
   # backend "s3" {

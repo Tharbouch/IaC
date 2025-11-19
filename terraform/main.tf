@@ -472,7 +472,7 @@ resource "aws_iam_role" "ec2_role" {
   )
 }
 
-# Attach SSM policy to allow Systems Manager access
+# SSM policy to allow Systems Manager access
 resource "aws_iam_role_policy_attachment" "ec2_ssm" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
   role       = aws_iam_role.ec2_role.name
