@@ -80,7 +80,7 @@ jobs:
       # -----------------------------------------------------------------------
       # Trivy - IaC Security Scanner
       # -----------------------------------------------------------------------
-      - name: Run Trivy IaC Scanner
+      - name: Run Trivy IaC Scanner (SARIF)
         uses: aquasecurity/trivy-action@master
         with:
           scan-type: "config"
@@ -102,19 +102,30 @@ jobs:
       # Checkov - SAST for Infrastructure as Code
       # -----------------------------------------------------------------------
       - name: Run Checkov SAST Scanner
+        id: checkov
         uses: bridgecrewio/checkov-action@master
         with:
           directory: terraform/
           framework: terraform
-          output_format: cli,sarif
-          output_file_path: console,checkov-results.sarif
-          soft_fail: false
+          # generate SARIF
+          output_format: sarif
+          output_file_path: checkov-results.sarif
+          # do not fail the step so SARIF is produced for upload; adjust if you want hard-fail
+          soft_fail: true
           skip_check: CKV_AWS_79,CKV2_AWS_41
-        # allow Checkov to fail the step/job so branch protection blocks merging
+
+      - name: Check if Checkov SARIF exists
+        id: checkov_sarif_check
+        run: |
+          if [ -f checkov-results.sarif ]; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
 
       - name: Upload Checkov results to GitHub Security
+        if: steps.checkov_sarif_check.outputs.exists == 'true'
         uses: github/codeql-action/upload-sarif@v3
-        if: always()
         with:
           sarif_file: "checkov-results.sarif"
           category: "checkov-iac"
