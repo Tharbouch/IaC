@@ -32,19 +32,11 @@ on:
   pull_request:
     branches:
       - "**"
-    paths:
-      - "terraform/**"
-      - "policies/**"
-      - ".github/workflows/**"
 
   # Trigger on push to main branch (after PR merge)
   push:
     branches:
       - main
-    paths:
-      - "terraform/**"
-      - "policies/**"
-      - ".github/workflows/**"
 
   # Allow manual workflow trigger
   workflow_dispatch:
