@@ -84,14 +84,11 @@ Prerequisites    →      Phase 1      →      Phase 2     →      Phase 3    
 ```
 DevSecOps-IaC/
 ├── README.md                          # This file - project overview
-├── TOOLS-EXPLAINED.md                 # Tool comparison and rationale
 ├── verify-prerequisites.sh            # Installation verification script
 │
 ├── .github/workflows/                 # CI/CD Pipelines (4 workflows)
-│   ├── 01-security-scan.yml           # Phase 2: SAST (Checkov + Trivy)
-│   ├── 02-policy-check.yml            # Phase 2: OPA policy validation
-│   ├── 03-deploy.yml                  # Phase 3: CI/CD deployment (manual approval)
-│   └── 04-drift-detection.yml         # Phase 4: Drift monitoring (scheduled)
+│   ├── 00-security-scan.yml           # All 4 Phases : SAST (Checkov + Trivy),  OPA policy validation, Terraform deployment with manual approval, Drift monitoring
+│   └── 02-drift-detection.yml         # Drift monitoring (scheduled)
 │
 ├── terraform/                         # Infrastructure as Code
 │   ├── main.tf                        # Main infrastructure (security-hardened)
@@ -104,16 +101,6 @@ DevSecOps-IaC/
 │   ├── s3_encryption.rego             # Enforce S3 encryption
 │   ├── security_groups.rego           # Restrict security group rules
 │   └── required_tags.rego             # Enforce resource tagging
-├── docs/                              # Complete thesis documentation
-│   ├── PHASE1-IMPLEMENTATION.md       # Phase 1: Pre-commit hooks
-│   ├── PHASE2-IMPLEMENTATION.md       # Phase 2: CI security gates
-│   ├── PHASE2-ANALYSIS.md             # Phase 2: Initial scan results
-│   ├── PHASE2-COMPLETION-SUMMARY.md   # Phase 2: Complete metrics & analysis
-│   ├── PHASE3-IMPLEMENTATION.md       # Phase 3: CI/CD deployment (AWS)
-│   ├── PHASE4-IMPLEMENTATION.md       # Phase 4: Drift detection
-│   ├── screenshots/                   # Screenshots for thesis
-│   └── test-results/                  # Scan results and reports
-│
 ├── .pre-commit-config.yaml            # Phase 1: Pre-commit hooks config
 ├── .gitleaks.toml                     # Phase 1: Secret scanning config
 ├── .tflint.hcl                        # Phase 1: Terraform linting config
@@ -133,113 +120,14 @@ DevSecOps-IaC/
 ### Security Tools
 - **Secret Scanning:** Gitleaks v8.18+
 - **SAST:** Checkov v2.x, Trivy v0.x
-- **Linting:** TFLint
 - **Policy Engine:** Open Policy Agent (OPA) v0.x
 - **Drift Detection:** Driftctl v0.x
 
 ### Pre-commit Framework
 - **Framework:** pre-commit v3.x
-- **Hooks:** Gitleaks, TFLint, Terraform fmt/validate
+- **Hooks:** Gitleaks, Terraform fmt/validate
 
 ---
-
-### Defense-in-Depth Validation
-
-This framework proves that **multiple security layers** are essential:
-
-| Attack Scenario | Layer 1 (Phase 1) | Layer 2 (Phase 2) | Layer 3 (Phase 3) | Layer 4 (Phase 4) |
-|----------------|-------------------|-------------------|-------------------|-------------------|
-| **Developer bypasses pre-commit** | ❌ Bypassed | ✅ **Caught** | N/A | N/A |
-| **Vulnerable code in PR** | ⚠️ May bypass | ✅ **Caught** | ⚠️ Blocked | N/A |
-| **Manual AWS Console change** | N/A | N/A | N/A | ✅ **Detected** |
-| **Credentials in code** | ✅ **Caught** | ✅ **Caught** | N/A | N/A |
-
-### Complete Metrics for Thesis
-
-**Detection Metrics:**
-- Total vulnerabilities tested: 17
-- Detection rate: 100% (17/17)
-- False positives: 0
-- False negatives: 0
-- Tool overlap: 24% (4/17 detected by both Trivy and Checkov)
-- Checkov additional coverage: 69% (9/13 unique to Checkov)
-
-**Performance Metrics:**
-- Phase 1 execution time: <10 seconds
-- Phase 2 pipeline duration: ~2 minutes
-- Phase 3 deployment time: ~5 minutes
-- Phase 4 scan time: 30-60 seconds
-
-**Security Fixes Applied:**
-- Critical issues: 4 → 0
-- High-severity: 9 → 0
-- Total fixes: 12 security enhancements
-- Lines of code changed: 355 insertions, 289 deletions
-
-## 🔐 Security Features Implemented
-
-### Infrastructure Security Controls
-
-**VPC & Networking:**
-- ✅ VPC Flow Logs (encrypted with KMS)
-- ✅ Default security group restricted (deny all)
-- ✅ Network segmentation (public subnet only for web tier)
-
-**Compute (EC2):**
-- ✅ IAM instance profile (no hardcoded credentials)
-- ✅ Systems Manager (SSM) access (no SSH keys needed)
-- ✅ Encrypted EBS volumes
-- ✅ IMDSv2 enforced (metadata security)
-- ✅ Detailed monitoring enabled
-- ✅ EBS optimization enabled
-
-**Storage (S3):**
-- ✅ KMS customer-managed encryption
-- ✅ Versioning enabled
-- ✅ Public access blocked
-- ✅ Lifecycle policies configured
-- ✅ Abort incomplete multipart uploads
-
-**Logging & Monitoring:**
-- ✅ CloudWatch Log Groups (KMS encrypted)
-- ✅ VPC Flow Logs (all traffic)
-- ✅ 7-day retention (Free Tier optimized)
-
-**Identity & Access:**
-- ✅ IAM roles (no access keys in code)
-- ✅ Least-privilege policies (5 specific permissions, not AdministratorAccess)
-- ✅ Resource-specific permissions (no wildcard `*`)
-
-**Encryption:**
-- ✅ KMS customer-managed keys (not AWS-managed)
-- ✅ Key rotation enabled
-- ✅ Comprehensive key policies
-- ✅ All data encrypted at rest
-
----
-
-## ⚠️ Important Reminders
-
-### AWS Cost Management
-
-✅ **DO:**
-- Use only Free Tier resources (t2.micro, small S3 buckets)
-- Destroy resources immediately after testing
-- Set up billing alerts ($0 threshold)
-- Check billing dashboard daily
-- Use us-east-1 region (most Free Tier eligible)
-
-❌ **DON'T:**
-- Leave EC2 instances running overnight
-- Create resources outside us-east-1
-- Use non-Free Tier instance types
-- Skip the teardown steps
-
-**Teardown command:**
-```bash
-cd terraform
-terraform destroy
-```
 
 ## 📝 License
 

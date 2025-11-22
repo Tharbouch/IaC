@@ -68,9 +68,10 @@ resource "aws_vpc" "main" {
 
 # KMS key for CloudWatch Logs encryption
 resource "aws_kms_key" "cloudwatch" {
-  description             = "KMS key for CloudWatch logs encryption"
-  deletion_window_in_days = 7
-  enable_key_rotation     = true
+  description                        = "KMS key for CloudWatch logs encryption"
+  deletion_window_in_days            = 7
+  enable_key_rotation                = true
+  bypass_policy_lockout_safety_check = true # Allow root account to manage key policy
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -321,9 +322,10 @@ resource "aws_security_group" "web_server" {
 
 # Create KMS key for S3 encryption
 resource "aws_kms_key" "s3" {
-  description             = "KMS key for S3 bucket encryption"
-  deletion_window_in_days = 7
-  enable_key_rotation     = true
+  description                        = "KMS key for S3 bucket encryption"
+  deletion_window_in_days            = 7
+  enable_key_rotation                = true
+  bypass_policy_lockout_safety_check = true # Allow root account to manage key policy
 
   policy = jsonencode({
     Version = "2012-10-17"

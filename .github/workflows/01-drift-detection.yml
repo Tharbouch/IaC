@@ -3,7 +3,7 @@
 # Phase: 4 (Continuous Monitoring)
 #
 # What this does:
-# - Runs on a schedule (daily)
+# - Runs on a schedule (every 6 hours)
 # - Compares Terraform state with actual AWS resources
 # - Detects manual changes made outside Terraform
 # - Alerts on drift detected
@@ -15,9 +15,9 @@ name: Drift Detection
 # ==============================================================================
 
 on:
-  # Run on a schedule (daily at 9 AM UTC)
+  # Run on a schedule (every 6 hours)
   schedule:
-    - cron: '0 */6 * * *'  # Every day at 9:00 AM UTC
+    - cron: "0 */6 * * *" # every 6 hours
 
   # Manual trigger
   workflow_dispatch:
@@ -34,35 +34,30 @@ on:
 
 permissions:
   contents: read
-  issues: write  # To create issues for drift alerts
+  issues: write # To create issues for drift alerts
 
 # ==============================================================================
 # ENVIRONMENT VARIABLES
 # ==============================================================================
 
 env:
-  AWS_REGION: 'us-east-1'
-  TF_VERSION: '1.6.0'
-
-# ==============================================================================
-# JOBS
-# ==============================================================================
+  AWS_REGION: "us-east-1"
+  TF_VERSION: "1.6.0"
 
 jobs:
   # ============================================================================
   # JOB 1: DRIFTCTL SCAN
   # ============================================================================
-
   driftctl-scan:
     name: Driftctl Drift Detection
     runs-on: ubuntu-latest
+    outputs:
+      drift_detected: ${{ steps.driftctl.outputs.drift_detected }}
 
     steps:
-      # Step 1: Checkout code
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # Step 2: Configure AWS credentials
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -70,19 +65,16 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      # Step 3: Setup Terraform (needed for state file)
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TF_VERSION }}
 
-      # Step 4: Terraform Init
       - name: Terraform Init
         run: |
           cd terraform
           terraform init
 
-      # Step 5: Install Driftctl
       - name: Install Driftctl
         run: |
           curl -L https://github.com/snyk/driftctl/releases/latest/download/driftctl_linux_amd64 -o driftctl
@@ -90,21 +82,17 @@ jobs:
           sudo mv driftctl /usr/local/bin/
           driftctl version
 
-      # Step 6: Run Driftctl scan
       - name: Run Driftctl Scan
         id: driftctl
         run: |
           cd terraform
 
           echo "Running Driftctl to detect infrastructure drift..."
-
-          # Run driftctl with JSON output
           driftctl scan \
-            --from tfstate://terraform.tfstate \
+            --from tfstate+s3://devsecops-thesis-state-1763421190/devsecops/terraform.tfstate \
             --output json://drift-results.json \
             --output console || true
 
-          # Check if drift was detected
           if [ -f drift-results.json ]; then
             unmanaged=$(jq '.summary.total_unmanaged' drift-results.json)
             missing=$(jq '.summary.total_missing' drift-results.json)
@@ -124,16 +112,18 @@ jobs:
             fi
           fi
 
-      # Step 7: Generate drift report
       - name: Generate Drift Report
         if: always()
         run: |
           cd terraform
 
-          cat > drift-report.md << 'EOF'
+          # Get current date properly
+          SCAN_DATE=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
+
+          cat > drift-report.md << EOF
           # Infrastructure Drift Detection Report
 
-          **Scan Date:** $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          **Scan Date:** ${SCAN_DATE}
 
           ## Summary
 
@@ -151,33 +141,12 @@ jobs:
 
           ## ⚠️ Drift Detected!
 
-          Infrastructure drift has been detected. This means resources have been modified outside of Terraform.
-
-          **What is drift?**
-          - **Unmanaged:** Resources exist in AWS but not in Terraform
-          - **Missing:** Resources defined in Terraform but don't exist in AWS
-          - **Drifted:** Resources modified manually (not matching Terraform)
+          Infrastructure drift has been detected.
 
           **Recommended Actions:**
-          1. Review the drift details below
-          2. Determine if changes were intentional
-          3. Update Terraform to match AWS, OR
-          4. Revert AWS changes to match Terraform
-
-          <details>
-          <summary>View Detailed Drift Report</summary>
-
-          \`\`\`json
-          EOF
-
-            if [ -f drift-results.json ]; then
-              cat drift-results.json >> drift-report.md
-            fi
-
-            cat >> drift-report.md << 'EOF'
-          \`\`\`
-
-          </details>
+          1. Review the drift details
+          2. Update Terraform to match AWS, OR
+          3. Revert AWS changes to match Terraform
           EOF
           else
             cat >> drift-report.md << 'EOF'
@@ -254,46 +223,155 @@ jobs:
       - name: Terraform Refresh
         run: |
           cd terraform
-
           if [ ! -f terraform.tfvars ]; then
             cp terraform.tfvars.example terraform.tfvars
           fi
-
           terraform refresh
 
+      # FIXED v2: More robust exit code capture
       - name: Terraform Plan (Detect Changes)
-        id: plan
+        id: check-drift
         run: |
           cd terraform
 
-          terraform plan -detailed-exitcode -no-color | tee plan-drift.txt
+          echo "=========================================="
+          echo "Running Terraform Plan with -detailed-exitcode"
+          echo "Exit codes: 0=no changes, 1=error, 2=drift detected"
+          echo "=========================================="
 
-          exitcode=$?
+          # Run terraform plan and capture exit code directly (no pipe!)
+          terraform plan -detailed-exitcode -no-color -out=tfplan > plan-drift.txt 2>&1 || exitcode=$?
+
+          # If exitcode wasn't set by || (meaning terraform succeeded with 0), set it
+          exitcode=${exitcode:-0}
+
+          echo ""
+          echo "=========================================="
+          echo "TERRAFORM PLAN EXIT CODE: $exitcode"
+          echo "=========================================="
+
+          # Show the plan output
+          cat plan-drift.txt
+
+          # Set outputs
           echo "exitcode=$exitcode" >> $GITHUB_OUTPUT
 
-          # Exit code 2 means changes detected (drift)
-          if [ $exitcode -eq 2 ]; then
+          if [ "$exitcode" -eq 2 ]; then
             echo "drift_detected=true" >> $GITHUB_OUTPUT
-          else
+            echo ""
+            echo "🚨🚨🚨 DRIFT DETECTED! 🚨🚨🚨"
+            echo "Terraform found differences between code and infrastructure!"
+          elif [ "$exitcode" -eq 0 ]; then
             echo "drift_detected=false" >> $GITHUB_OUTPUT
+            echo ""
+            echo "✅ No drift detected - Infrastructure matches code exactly."
+          else
+            echo "drift_detected=error" >> $GITHUB_OUTPUT
+            echo ""
+            echo "⚠️ Terraform plan encountered an error (exit code: $exitcode)"
           fi
-        continue-on-error: true
+
+      - name: Debug Outputs
+        if: always()
+        run: |
+          echo "=========================================="
+          echo "DEBUG: Checking step outputs"
+          echo "=========================================="
+          echo "drift_detected = ${{ steps.check-drift.outputs.drift_detected }}"
+          echo "exitcode = ${{ steps.check-drift.outputs.exitcode }}"
+          echo "=========================================="
 
       - name: Report Terraform Drift
-        if: steps.plan.outputs.drift_detected == 'true'
+        if: always()
         run: |
-          echo "## ⚠️ Terraform Detected Configuration Drift" >> $GITHUB_STEP_SUMMARY
+          DRIFT_STATUS="${{ steps.check-drift.outputs.drift_detected }}"
+          EXIT_CODE="${{ steps.check-drift.outputs.exitcode }}"
+
+          echo "# ✅ Terraform Drift Check (Authoritative)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Terraform plan shows differences between code and actual infrastructure:" >> $GITHUB_STEP_SUMMARY
+          echo "> **This is the most reliable drift detection method** - uses native \`terraform plan\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-          head -50 terraform/plan-drift.txt >> $GITHUB_STEP_SUMMARY
-          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Exit Code:** ${EXIT_CODE}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "$DRIFT_STATUS" == "true" ]; then
+            echo "## ⚠️ DRIFT DETECTED!" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Terraform plan shows differences between code and actual infrastructure." >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "<details>" >> $GITHUB_STEP_SUMMARY
+            echo "<summary>View Plan Output</summary>" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`terraform" >> $GITHUB_STEP_SUMMARY
+            cat terraform/plan-drift.txt >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            echo "</details>" >> $GITHUB_STEP_SUMMARY
+          elif [ "$DRIFT_STATUS" == "error" ]; then
+            echo "## ⚠️ Error During Plan" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Terraform plan encountered an error. Check logs for details." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "## ✅ No Drift Detected" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Infrastructure matches Terraform configuration exactly." >> $GITHUB_STEP_SUMMARY
+          fi
 
   # ============================================================================
-  # JOB 3: COMPLIANCE SCAN
+  # JOB 3: DRIFT DETECTION SUMMARY
   # ============================================================================
+  drift-summary:
+    name: Drift Detection Summary
+    runs-on: ubuntu-latest
+    needs: [driftctl-scan, terraform-drift]
+    if: always()
 
+    steps:
+      - name: Generate Consolidated Summary
+        run: |
+          TF_DRIFT="${{ needs.terraform-drift.outputs.drift_detected }}"
+          TF_EXIT="${{ needs.terraform-drift.outputs.exitcode }}"
+          DC_DRIFT="${{ needs.driftctl-scan.outputs.drift_detected }}"
+
+          echo "# 📊 Drift Detection Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Debug Info" >> $GITHUB_STEP_SUMMARY
+          echo "- Terraform drift_detected: \`${TF_DRIFT}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Terraform exit code: \`${TF_EXIT}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Driftctl drift_detected: \`${DC_DRIFT}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          echo "## Results Comparison" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Method | Status | Reliability | Exit Code |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|--------|-------------|-----------|" >> $GITHUB_STEP_SUMMARY
+
+          if [ "$TF_DRIFT" == "true" ]; then
+            echo "| **Terraform Plan** | ⚠️ **DRIFT DETECTED** | HIGH | ${TF_EXIT} |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| **Terraform Plan** | ✅ No Drift | HIGH | ${TF_EXIT} |" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [ "$DC_DRIFT" == "true" ]; then
+            echo "| Driftctl | ⚠️ Drift Detected | MEDIUM | - |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| Driftctl | ✅ No Drift | MEDIUM | - |" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "$TF_DRIFT" == "true" ]; then
+            echo "### ⚠️ ACTION REQUIRED" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Drift has been detected!** Review the 'Terraform Drift Check' job for details." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "### ✅ All Clear" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "No drift detected. Infrastructure matches Terraform configuration." >> $GITHUB_STEP_SUMMARY
+          fi
+
+  # ============================================================================
+  # JOB 4: COMPLIANCE SCAN
+  # ============================================================================
   compliance-scan:
     name: Runtime Compliance Scan
     runs-on: ubuntu-latest
@@ -315,8 +393,6 @@ jobs:
       - name: Run Checkov on AWS Account
         run: |
           echo "Running compliance scan on deployed AWS resources..."
-
-          # Scan live AWS resources (not just code)
           checkov --framework aws \
             --output cli \
             --output json \
