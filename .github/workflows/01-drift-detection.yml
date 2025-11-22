@@ -17,7 +17,7 @@ name: Drift Detection
 on:
   # Run on a schedule (daily at 9 AM UTC)
   schedule:
-    - cron: '0 */6 * * *'  # Every day at 9:00 AM UTC
+    - cron: "0 */6 * * *" # Every day at 9:00 AM UTC
 
   # Manual trigger
   workflow_dispatch:
@@ -34,15 +34,15 @@ on:
 
 permissions:
   contents: read
-  issues: write  # To create issues for drift alerts
+  issues: write # To create issues for drift alerts
 
 # ==============================================================================
 # ENVIRONMENT VARIABLES
 # ==============================================================================
 
 env:
-  AWS_REGION: 'us-east-1'
-  TF_VERSION: '1.6.0'
+  AWS_REGION: "us-east-1"
+  TF_VERSION: "1.6.0"
 
 # ==============================================================================
 # JOBS
@@ -97,10 +97,8 @@ jobs:
           cd terraform
 
           echo "Running Driftctl to detect infrastructure drift..."
-
-          # Run driftctl with JSON output
           driftctl scan \
-            --from tfstate://terraform.tfstate \
+            --from tfstate+s3://devsecops-thesis-state-1763421190/devsecops/terraform.tfstate \
             --output json://drift-results.json \
             --output console || true
 
@@ -329,7 +327,6 @@ jobs:
         with:
           name: compliance-scan-results
           path: results_json.json
-
 # ==============================================================================
 # TESTING INSTRUCTIONS (For Thesis)
 # ==============================================================================
