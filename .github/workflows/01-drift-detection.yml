@@ -56,6 +56,8 @@ jobs:
   driftctl-scan:
     name: Driftctl Drift Detection
     runs-on: ubuntu-latest
+    outputs:
+      drift_detected: ${{ steps.driftctl.outputs.drift_detected }}
 
     steps:
       # Step 1: Checkout code
@@ -189,6 +191,11 @@ jobs:
       # Step 8: Display summary
       - name: Display Drift Summary
         run: |
+          echo "# 🔍 Driftctl Scan Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "> **Note:** Driftctl has known limitations and may not detect all drift types." >> $GITHUB_STEP_SUMMARY
+          echo "> For comprehensive drift detection, check the **'Terraform Drift Check'** job below." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
           cat terraform/drift-report.md >> $GITHUB_STEP_SUMMARY
 
       # Step 9: Upload drift results
@@ -227,6 +234,8 @@ jobs:
   terraform-drift:
     name: Terraform Drift Check
     runs-on: ubuntu-latest
+    outputs:
+      drift_detected: ${{ steps.plan.outputs.drift_detected }}
 
     steps:
       - name: Checkout code
@@ -278,18 +287,71 @@ jobs:
         continue-on-error: true
 
       - name: Report Terraform Drift
-        if: steps.plan.outputs.drift_detected == 'true'
+        if: always()
         run: |
-          echo "## ⚠️ Terraform Detected Configuration Drift" >> $GITHUB_STEP_SUMMARY
+          echo "# ✅ Terraform Drift Check (Authoritative)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Terraform plan shows differences between code and actual infrastructure:" >> $GITHUB_STEP_SUMMARY
+          echo "> **This is the most reliable drift detection method** - uses native Terraform plan" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-          head -50 terraform/plan-drift.txt >> $GITHUB_STEP_SUMMARY
-          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ steps.plan.outputs.drift_detected }}" == "true" ]; then
+            echo "## ⚠️ DRIFT DETECTED!" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Terraform plan shows differences between code and actual infrastructure:" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`terraform" >> $GITHUB_STEP_SUMMARY
+            head -100 terraform/plan-drift.txt >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "## ✅ No Drift Detected" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Infrastructure matches Terraform configuration exactly." >> $GITHUB_STEP_SUMMARY
+          fi
 
   # ============================================================================
-  # JOB 3: COMPLIANCE SCAN
+  # JOB 3: DRIFT DETECTION SUMMARY
+  # ============================================================================
+
+  drift-summary:
+    name: Drift Detection Summary
+    runs-on: ubuntu-latest
+    needs: [driftctl-scan, terraform-drift]
+    if: always()
+
+    steps:
+      - name: Generate Consolidated Summary
+        run: |
+          echo "# 📊 Drift Detection Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "This workflow uses two drift detection methods for comparison:" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          echo "## Results Comparison" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Method | Status | Reliability | Details |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|--------|-------------|---------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Terraform Plan** ✅ | ${{ needs.terraform-drift.outputs.drift_detected == 'true' && '⚠️ Drift Detected' || '✅ No Drift' }} | **HIGH** - Authoritative | Check 'Terraform Drift Check' job |" >> $GITHUB_STEP_SUMMARY
+          echo "| Driftctl | ${{ needs.driftctl-scan.outputs.drift_detected == 'true' && '⚠️ Drift Detected' || '✅ No Drift' }} | MEDIUM - Has limitations | Check 'Driftctl Drift Detection' job |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          echo "## 🎯 Recommendation" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Always trust the Terraform Drift Check results** as it uses native \`terraform plan\`" >> $GITHUB_STEP_SUMMARY
+          echo "and detects all types of drift including tag changes and resource modifications." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ needs.terraform-drift.outputs.drift_detected }}" == "true" ]; then
+            echo "### ⚠️ ACTION REQUIRED" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Drift has been detected by Terraform. Review the 'Terraform Drift Check' job for details." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "### ✅ All Clear" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "No drift detected. Infrastructure matches Terraform configuration." >> $GITHUB_STEP_SUMMARY
+          fi
+
+  # ============================================================================
+  # JOB 4: COMPLIANCE SCAN
   # ============================================================================
 
   compliance-scan:
