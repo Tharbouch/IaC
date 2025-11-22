@@ -80,23 +80,33 @@ jobs:
       # -----------------------------------------------------------------------
       # Trivy - IaC Security Scanner
       # -----------------------------------------------------------------------
-      - name: Run Trivy IaC Scanner (SARIF)
+      - name: Run Trivy IaC Scanner (Table Output)
+        uses: aquasecurity/trivy-action@master
+        continue-on-error: true
+        with:
+          scan-type: "config"
+          scan-ref: "terraform/"
+          format: "table"
+          severity: "CRITICAL,HIGH,MEDIUM"
+
+      - name: Run Trivy IaC Scanner (JSON Output)
         uses: aquasecurity/trivy-action@master
         with:
           scan-type: "config"
           scan-ref: "terraform/"
-          format: "sarif"
-          output: "trivy-results.sarif"
+          format: "json"
+          output: "trivy-results.json"
           severity: "CRITICAL,HIGH,MEDIUM"
           exit-code: "1"
         # allow Trivy to fail the step/job so branch protection blocks merging
 
-      - name: Upload Trivy results to GitHub Security
-        uses: github/codeql-action/upload-sarif@v3
+      - name: Upload Trivy JSON Results
         if: always()
+        uses: actions/upload-artifact@v4
         with:
-          sarif_file: "trivy-results.sarif"
-          category: "trivy-iac"
+          name: trivy-scan-results
+          path: trivy-results.json
+          retention-days: 30
 
       # -----------------------------------------------------------------------
       # Checkov - SAST for Infrastructure as Code
@@ -107,28 +117,19 @@ jobs:
         with:
           directory: terraform/
           framework: terraform
-          # generate SARIF
-          output_format: sarif
-          output_file_path: checkov-results.sarif
-          # do not fail the step so SARIF is produced for upload; adjust if you want hard-fail
+          output_format: json
+          output_file_path: checkov-results.json
+          # do not fail the step so JSON is produced for upload
           soft_fail: true
           skip_check: CKV_AWS_79,CKV2_AWS_41
 
-      - name: Check if Checkov SARIF exists
-        id: checkov_sarif_check
-        run: |
-          if [ -f checkov-results.sarif ]; then
-            echo "exists=true" >> $GITHUB_OUTPUT
-          else
-            echo "exists=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Upload Checkov results to GitHub Security
-        if: steps.checkov_sarif_check.outputs.exists == 'true'
-        uses: github/codeql-action/upload-sarif@v3
+      - name: Upload Checkov JSON Results
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          sarif_file: "checkov-results.sarif"
-          category: "checkov-iac"
+          name: checkov-scan-results
+          path: checkov-results.json
+          retention-days: 30
 
       # -----------------------------------------------------------------------
       # Gitleaks - Secret Scanning
@@ -154,7 +155,9 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Status:** Security scans completed" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "📊 View detailed results in the Security tab above" >> $GITHUB_STEP_SUMMARY
+          echo "📥 **Download Results:** Check the 'Artifacts' section below for JSON reports:" >> $GITHUB_STEP_SUMMARY
+          echo "- trivy-scan-results.json" >> $GITHUB_STEP_SUMMARY
+          echo "- checkov-scan-results.json" >> $GITHUB_STEP_SUMMARY
 
   # ===========================================================================
   # Phase 2 - Job 2: Policy Validation with OPA
