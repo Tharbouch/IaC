@@ -45,6 +45,7 @@ on:
       - "terraform/**"
       - "policies/**"
       - ".github/workflows/**"
+      - "tests/**"
 
   # Allow manual workflow trigger
   workflow_dispatch:
