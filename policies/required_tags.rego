@@ -174,6 +174,13 @@ warn contains msg if {
 # HELPER FUNCTIONS
 # ==============================================================================
 
+# Handles missing (null) tags block safely
+has_tag(resource, tag_name) if {
+    tags := object.get(resource.change.after, "tags", {})
+
+    tags[tag_name]
+}
+
 # Check if resource type is in the taggable list
 is_taggable(resource_type) if {
     resource_type == taggable_resources[_]
