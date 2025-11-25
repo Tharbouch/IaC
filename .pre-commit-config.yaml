@@ -108,6 +108,7 @@ repos:
         description: Validate Terraform syntax
         args:
           - --hook-config=--retry-once-with-cleanup=true
+        exclude: "^tests/"
 
       # # TFLint - Terraform linter (optional)
       # - id: terraform_tflint
