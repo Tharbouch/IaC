@@ -134,6 +134,25 @@ deny contains msg if {
     )
 }
 
+# =============================================================================
+# POLICY: tags required
+#==============================================================================
+
+deny contains msg if {
+    resource := input.resource_changes[_]
+    is_taggable(resource.type)
+
+    # 1. Get tags, defaulting to empty object if missing
+    # object.get(object, key, default_value)
+    tags := object.get(resource.change.after, "tags", {})
+
+    # 2. Check for required tags
+    req_tag := required_tags[_]
+    not tags[req_tag]
+
+    msg := sprintf("Resource '%s' is missing required tag: '%s'", [resource.address, req_tag])
+}
+
 # ==============================================================================
 # WARNING: Resources missing recommended tags
 # ==============================================================================
