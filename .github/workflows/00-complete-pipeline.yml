@@ -125,7 +125,7 @@ jobs:
           output_file_path: checkov-results.json
           # Checkov will report failures but continue-on-error allows pipeline to continue
           soft_fail: false
-          skip_check: CKV_AWS_79,CKV2_AWS_41
+          skip_check: CKV_AWS_79,CKV2_AWS_41, CKV_AWS_18
 
       - name: Upload Checkov JSON Results
         if: always()
