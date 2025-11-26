@@ -251,27 +251,131 @@ jobs:
           terraform plan -out=tfplan.binary
           terraform show -json tfplan.binary > tfplan.json
 
-      - name: Run OPA Policy Tests
+      - name: Run OPA Policy Tests on Production Code
         working-directory: terraform
         run: |
-          echo "## 📋 Policy Validation Results" > policy-results.txt
+          echo "## 📋 Policy Validation Results (Production Code)" > policy-results.txt
           failures=0
 
           for policy in s3_encryption security_groups required_tags; do
-            echo "### $policy Policy" >> policy-results.txt
-            out=$(opa eval --data ../policies/${policy}.rego --input tfplan.json 'data.terraform.deny' 2>&1 || true)
+            echo "### Testing $policy Policy" >> policy-results.txt
+            # Use the correct package path based on policy name
+            package_path="terraform.${policy}"
+            out=$(opa eval --format=json --data ../policies/${policy}.rego --input tfplan.json "data.${package_path}.deny" 2>&1 || true)
             echo "$out" >> policy-results.txt
-            # detect non-empty deny results; adjust detection if your policy returns a different structure
-            if echo "$out" | grep -q "deny"; then
+
+            # Parse JSON output to check if deny array has elements
+            deny_count=$(echo "$out" | jq -r '.result[0].expressions[0].value | length' 2>/dev/null || echo "0")
+            if [ "$deny_count" -gt 0 ]; then
+              echo "❌ Violations found in $policy policy ($deny_count violations)" >> policy-results.txt
               failures=$((failures+1))
+            else
+              echo "✅ No violations in $policy policy" >> policy-results.txt
             fi
             echo "" >> policy-results.txt
           done
 
           cat policy-results.txt
           if [ "$failures" -gt 0 ]; then
-            echo "OPA policy violations detected ($failures)." >&2
+            echo "OPA policy violations detected in production code ($failures policies failed)." >&2
             exit 1
+          fi
+
+      # -----------------------------------------------------------------------
+      # Test OPA Policies Against Test Files
+      # -----------------------------------------------------------------------
+      - name: Test OPA Policies Against Test Files
+        run: |
+          echo "## 🧪 Testing OPA Policies Against Test Files" > test-policy-results.txt
+          echo "" >> test-policy-results.txt
+          test_failures=0
+          test_successes=0
+
+          # Create a temporary directory for test plans
+          mkdir -p test-plans
+
+          # Test each test file
+          for test_file in tests/opa_*.tf; do
+            if [ ! -f "$test_file" ]; then
+              continue
+            fi
+
+            test_name=$(basename "$test_file" .tf)
+            echo "### Testing: $test_name" >> test-policy-results.txt
+
+            # Create a temporary directory for this test
+            test_dir="test-plans/${test_name}"
+            mkdir -p "$test_dir"
+
+            # Copy test file and create a minimal Terraform setup
+            cp "$test_file" "$test_dir/main.tf"
+
+            # Create a minimal provider.tf for the test
+            echo 'terraform {' > "$test_dir/provider.tf"
+            echo '  required_version = ">= 1.0"' >> "$test_dir/provider.tf"
+            echo '  required_providers {' >> "$test_dir/provider.tf"
+            echo '    aws = {' >> "$test_dir/provider.tf"
+            echo '      source  = "hashicorp/aws"' >> "$test_dir/provider.tf"
+            echo '      version = "~> 5.0"' >> "$test_dir/provider.tf"
+            echo '    }' >> "$test_dir/provider.tf"
+            echo '    random = {' >> "$test_dir/provider.tf"
+            echo '      source  = "hashicorp/random"' >> "$test_dir/provider.tf"
+            echo '      version = "~> 3.0"' >> "$test_dir/provider.tf"
+            echo '    }' >> "$test_dir/provider.tf"
+            echo '  }' >> "$test_dir/provider.tf"
+            echo '}' >> "$test_dir/provider.tf"
+            echo '' >> "$test_dir/provider.tf"
+            echo 'provider "aws" {' >> "$test_dir/provider.tf"
+            echo '  region = "us-east-1"' >> "$test_dir/provider.tf"
+            echo '}' >> "$test_dir/provider.tf"
+
+            # Generate Terraform plan for this test
+            cd "$test_dir"
+            terraform init -backend=false > /dev/null 2>&1 || true
+            terraform plan -out=tfplan.binary > /dev/null 2>&1 || true
+
+            if [ -f "tfplan.binary" ]; then
+              terraform show -json tfplan.binary > tfplan.json 2>/dev/null || true
+
+              if [ -f "tfplan.json" ]; then
+                # Test each policy
+                for policy in s3_encryption security_groups required_tags; do
+                  package_path="terraform.${policy}"
+                  out=$(opa eval --format=json --data ../../../policies/${policy}.rego --input tfplan.json "data.${package_path}.deny" 2>&1 || true)
+
+                  # Parse JSON output to check if deny array has elements
+                  deny_count=$(echo "$out" | jq -r '.result[0].expressions[0].value | length' 2>/dev/null || echo "0")
+
+                  # Check if violations were found
+                  if [ "$deny_count" -gt 0 ]; then
+                    echo "  ✅ $policy: $deny_count violation(s) detected (expected)" >> ../../../test-policy-results.txt
+                    test_successes=$((test_successes+1))
+                  else
+                    echo "  ❌ $policy: No violations detected (unexpected for test file)" >> ../../../test-policy-results.txt
+                    test_failures=$((test_failures+1))
+                  fi
+                done
+              else
+                echo "  ⚠️ Could not generate plan JSON for $test_name" >> ../../../test-policy-results.txt
+              fi
+            else
+              echo "  ⚠️ Could not generate plan for $test_name" >> ../../../test-policy-results.txt
+            fi
+
+            cd ../..
+            echo "" >> test-policy-results.txt
+          done
+
+          echo "### Test Summary" >> test-policy-results.txt
+          echo "- Expected violations detected: $test_successes" >> test-policy-results.txt
+          echo "- Missing violations (policies not working): $test_failures" >> test-policy-results.txt
+          echo "" >> test-policy-results.txt
+
+          cat test-policy-results.txt
+
+          if [ "$test_failures" -gt 0 ]; then
+            echo "⚠️ Some OPA policies are not detecting violations in test files!" >&2
+            echo "This indicates the policies may need adjustment." >&2
           fi
 
       # -----------------------------------------------------------------------
