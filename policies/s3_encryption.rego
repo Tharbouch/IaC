@@ -34,14 +34,90 @@ deny contains msg if {
 
 # Check if encryption configuration exists for a bucket
 has_encryption_config(bucket_address) if {
-    # Look for encryption configuration resource
+    # Find the bucket resource
+    bucket_resource := input.resource_changes[_]
+    bucket_resource.type == "aws_s3_bucket"
+    bucket_resource.address == bucket_address
+
+    # Get the bucket ID/name (resolved value)
+    bucket_id := bucket_resource.change.after.id
+    bucket_name := bucket_resource.change.after.bucket
+
+    # Find encryption config that references this bucket
     encryption := input.resource_changes[_]
     encryption.type == "aws_s3_bucket_server_side_encryption_configuration"
 
-    # Check if it references our bucket
-    # The encryption config's bucket attribute should match the bucket resource
-    # We use strict equality here or check inclusion
-    encryption.change.after.bucket == bucket_address
+    # Get the bucket reference from encryption config
+    bucket_ref := encryption.change.after.bucket
+
+    # The bucket reference can be:
+    # 1. Direct address match: "aws_s3_bucket.bucket_name"
+    # 2. Reference expression: "aws_s3_bucket.bucket_name.id" or similar
+    # 3. Resolved value (bucket ID/name)
+
+    # Check if reference matches bucket address directly
+    bucket_ref == bucket_address
+}
+
+# Alternative: Check if bucket reference contains the bucket address (for .id, .arn references)
+has_encryption_config(bucket_address) if {
+    # Find the bucket resource
+    bucket_resource := input.resource_changes[_]
+    bucket_resource.type == "aws_s3_bucket"
+    bucket_resource.address == bucket_address
+
+    # Find encryption config
+    encryption := input.resource_changes[_]
+    encryption.type == "aws_s3_bucket_server_side_encryption_configuration"
+
+    # Get bucket reference
+    bucket_ref := encryption.change.after.bucket
+
+    # Extract resource name from reference (e.g., "aws_s3_bucket.opa_test" from "aws_s3_bucket.opa_test.id")
+    # Check if reference starts with bucket address
+    startswith(bucket_ref, bucket_address)
+}
+
+# Alternative: Check if bucket reference matches resolved bucket ID or name
+has_encryption_config(bucket_address) if {
+    # Find the bucket resource
+    bucket_resource := input.resource_changes[_]
+    bucket_resource.type == "aws_s3_bucket"
+    bucket_resource.address == bucket_address
+
+    # Get resolved bucket values
+    bucket_id := bucket_resource.change.after.id
+    bucket_name := bucket_resource.change.after.bucket
+
+    # Find encryption config
+    encryption := input.resource_changes[_]
+    encryption.type == "aws_s3_bucket_server_side_encryption_configuration"
+
+    # Get bucket reference (could be resolved value)
+    bucket_ref := encryption.change.after.bucket
+
+    # Check if reference matches resolved bucket ID or name
+    bucket_ref == bucket_id
+}
+
+has_encryption_config(bucket_address) if {
+    # Find the bucket resource
+    bucket_resource := input.resource_changes[_]
+    bucket_resource.type == "aws_s3_bucket"
+    bucket_resource.address == bucket_address
+
+    # Get resolved bucket name
+    bucket_name := bucket_resource.change.after.bucket
+
+    # Find encryption config
+    encryption := input.resource_changes[_]
+    encryption.type == "aws_s3_bucket_server_side_encryption_configuration"
+
+    # Get bucket reference (could be resolved value)
+    bucket_ref := encryption.change.after.bucket
+
+    # Check if reference matches resolved bucket name
+    bucket_ref == bucket_name
 }
 
 # Alternative: Check if encryption is inline (older Terraform syntax)

@@ -51,19 +51,23 @@ deny contains msg if {
     # Check if resource type is taggable
     is_taggable(resource.type)
 
-    # Check if resource is being created or updated
-    resource.change.actions[_] == "create"
+    # Check if resource is being created or updated (not deleted)
+    action := resource.change.actions[_]
+    action != "delete"
+
+    # Get tags, defaulting to empty object if missing
+    tags := object.get(resource.change.after, "tags", {})
 
     # Check each required tag
-    tag := required_tags[_]
+    req_tag := required_tags[_]
 
     # Check if tag is missing
-    not has_tag(resource, tag)
+    not tags[req_tag]
 
     # Generate violation message
     msg := sprintf(
         "Resource '%s' (type: %s) is missing required tag: '%s'",
-        [resource.address, resource.type, tag]
+        [resource.address, resource.type, req_tag]
     )
 }
 
@@ -75,12 +79,19 @@ deny contains msg if {
     resource := input.resource_changes[_]
     is_taggable(resource.type)
 
+    # Check if resource is being created or updated
+    action := resource.change.actions[_]
+    action != "delete"
+
+    # Get tags
+    tags := object.get(resource.change.after, "tags", {})
+
     # Check each required tag
     tag := required_tags[_]
 
     # Tag exists but value is empty
-    has_tag(resource, tag)
-    resource.change.after.tags[tag] == ""
+    tags[tag]
+    tags[tag] == ""
 
     msg := sprintf(
         "Resource '%s' has empty value for required tag: '%s'",
@@ -96,11 +107,18 @@ deny contains msg if {
     resource := input.resource_changes[_]
     is_taggable(resource.type)
 
+    # Check if resource is being created or updated
+    action := resource.change.actions[_]
+    action != "delete"
+
+    # Get tags
+    tags := object.get(resource.change.after, "tags", {})
+
     # Check if Owner tag exists
-    has_tag(resource, "Owner")
+    tags["Owner"]
 
     # Get Owner tag value
-    owner := resource.change.after.tags.Owner
+    owner := tags["Owner"]
 
     # Check if it's a valid email format
     not is_valid_email(owner)
@@ -119,11 +137,18 @@ deny contains msg if {
     resource := input.resource_changes[_]
     is_taggable(resource.type)
 
+    # Check if resource is being created or updated
+    action := resource.change.actions[_]
+    action != "delete"
+
+    # Get tags
+    tags := object.get(resource.change.after, "tags", {})
+
     # Check if Environment tag exists
-    has_tag(resource, "Environment")
+    tags["Environment"]
 
     # Get Environment tag value
-    environment := resource.change.after.tags.Environment
+    environment := tags["Environment"]
 
     # Check if environment is valid
     not valid_environment(environment)
@@ -134,25 +159,6 @@ deny contains msg if {
     )
 }
 
-# =============================================================================
-# POLICY: tags required
-#==============================================================================
-
-deny contains msg if {
-    resource := input.resource_changes[_]
-    is_taggable(resource.type)
-
-    # 1. Get tags, defaulting to empty object if missing
-    # object.get(object, key, default_value)
-    tags := object.get(resource.change.after, "tags", {})
-
-    # 2. Check for required tags
-    req_tag := required_tags[_]
-    not tags[req_tag]
-
-    msg := sprintf("Resource '%s' is missing required tag: '%s'", [resource.address, req_tag])
-}
-
 # ==============================================================================
 # WARNING: Resources missing recommended tags
 # ==============================================================================
@@ -161,8 +167,15 @@ warn contains msg if {
     resource := input.resource_changes[_]
     is_taggable(resource.type)
 
+    # Check if resource is being created or updated
+    action := resource.change.actions[_]
+    action != "delete"
+
+    # Get tags
+    tags := object.get(resource.change.after, "tags", {})
+
     tag := recommended_tags[_]
-    not has_tag(resource, tag)
+    not tags[tag]
 
     msg := sprintf(
         "Resource '%s' is missing recommended tag: '%s'",
@@ -174,21 +187,15 @@ warn contains msg if {
 # HELPER FUNCTIONS
 # ==============================================================================
 
-# Handles missing (null) tags block safely
-has_tag(resource, tag_name) if {
-    tags := object.get(resource.change.after, "tags", {})
-
-    tags[tag_name]
-}
-
 # Check if resource type is in the taggable list
 is_taggable(resource_type) if {
     resource_type == taggable_resources[_]
 }
 
-# Check if a specific tag exists on a resource
+# Check if a specific tag exists on a resource (handles missing tags safely)
 has_tag(resource, tag_name) if {
-    resource.change.after.tags[tag_name]
+    tags := object.get(resource.change.after, "tags", {})
+    tags[tag_name]
 }
 
 # Validate email format (basic check)

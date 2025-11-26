@@ -39,6 +39,13 @@ resource "aws_s3_bucket_versioning" "opa_test" {
   }
 }
 
+resource "aws_kms_key" "s3" {
+  #checkov:skip=CKV_AWS_7:Test file for OPA policies
+  #checkov:skip=CKV2_AWS_64:Test file for OPA policies
+  description             = "KMS key for S3 encryption"
+  deletion_window_in_days = 7
+}
+
 resource "random_id" "suffix" {
   byte_length = 4
 }

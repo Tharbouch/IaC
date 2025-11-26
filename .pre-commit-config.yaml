@@ -122,6 +122,7 @@ repos:
       - id: terraform_trivy
         name: Trivy - IaC Security Scanner
         description: Scan Terraform for security issues
+        exclude: "^tests/"
         args:
           - --args=--severity=CRITICAL
           - --args=--skip-dirs="**/.terraform"
