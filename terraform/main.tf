@@ -372,7 +372,6 @@ resource "aws_kms_alias" "s3" {
 resource "aws_s3_bucket" "data" {
   # checkov:skip=CKV_AWS_144: "No Cross-region replication (Free Tier)"
   # checkov:skip=CKV2_AWS_62: "No Event notifications required"
-  # CKV_AWS_18 "Server access logging not required for test bucket"
   bucket = local.s3_bucket_name
 
   tags = merge(
