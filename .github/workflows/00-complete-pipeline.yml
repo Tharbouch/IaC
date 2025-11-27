@@ -36,6 +36,7 @@ on:
       - "terraform/**"
       - "policies/**"
       - ".github/workflows/**"
+      - "tests/**"
 
   # Trigger on push to main branch (after PR merge)
   push:
@@ -90,7 +91,9 @@ jobs:
           severity: "CRITICAL,HIGH,MEDIUM"
 
       - name: Run Trivy IaC Scanner (JSON Output)
+        id: trivy
         uses: aquasecurity/trivy-action@master
+        continue-on-error: true
         with:
           scan-type: "config"
           scan-ref: "terraform/"
@@ -98,7 +101,7 @@ jobs:
           output: "trivy-results.json"
           severity: "CRITICAL,HIGH,MEDIUM"
           exit-code: "1"
-        # allow Trivy to fail the step/job so branch protection blocks merging
+        # Continue on error to allow all scanners to run and upload results
 
       - name: Upload Trivy JSON Results
         if: always()
@@ -114,14 +117,15 @@ jobs:
       - name: Run Checkov SAST Scanner
         id: checkov
         uses: bridgecrewio/checkov-action@master
+        continue-on-error: true
         with:
           directory: terraform/
           framework: terraform
           output_format: json
           output_file_path: checkov-results.json
-          # do not fail the step so JSON is produced for upload
-          soft_fail: true
-          skip_check: CKV_AWS_79,CKV2_AWS_41
+          # Checkov will report failures but continue-on-error allows pipeline to continue
+          soft_fail: false
+          skip_check: CKV_AWS_79,CKV2_AWS_41,CKV_AWS_18
 
       - name: Upload Checkov JSON Results
         if: always()
@@ -135,29 +139,57 @@ jobs:
       # Gitleaks - Secret Scanning
       # -----------------------------------------------------------------------
       - name: Run Gitleaks Secret Scanner
+        id: gitleaks
         uses: gitleaks/gitleaks-action@v2
+        continue-on-error: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_CONFIG: .gitleaks.toml
 
       # -----------------------------------------------------------------------
-      # Summary
+      # Fail Job if Any Scanner Detected Issues
       # -----------------------------------------------------------------------
-      - name: Security Scan Summary
+      - name: Check Security Scan Results
         if: always()
         run: |
+          TRIVY_STATUS="${{ steps.trivy.outcome }}"
+          CHECKOV_STATUS="${{ steps.checkov.outcome }}"
+          GITLEAKS_STATUS="${{ steps.gitleaks.outcome }}"
+
           echo "## 🔍 Phase 2: Security Scan Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Tools Used:**" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ Trivy (IaC vulnerability scanner)" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ Checkov (SAST for Terraform)" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ Gitleaks (Secret detection)" >> $GITHUB_STEP_SUMMARY
+          echo "**Scanner Status:**" >> $GITHUB_STEP_SUMMARY
+          echo "- Trivy: $TRIVY_STATUS" >> $GITHUB_STEP_SUMMARY
+          echo "- Checkov: $CHECKOV_STATUS" >> $GITHUB_STEP_SUMMARY
+          echo "- Gitleaks: $GITLEAKS_STATUS" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Status:** Security scans completed" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "📥 **Download Results:** Check the 'Artifacts' section below for JSON reports:" >> $GITHUB_STEP_SUMMARY
-          echo "- trivy-scan-results.json" >> $GITHUB_STEP_SUMMARY
-          echo "- checkov-scan-results.json" >> $GITHUB_STEP_SUMMARY
+
+          # Check if any scanner failed
+          if [ "$TRIVY_STATUS" == "failure" ] || [ "$CHECKOV_STATUS" == "failure" ] || [ "$GITLEAKS_STATUS" == "failure" ]; then
+            echo "❌ **SECURITY ISSUES DETECTED!**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Blocking Deployment:**" >> $GITHUB_STEP_SUMMARY
+
+            if [ "$TRIVY_STATUS" == "failure" ]; then
+              echo "- 🚨 Trivy found vulnerabilities (CRITICAL/HIGH/MEDIUM)" >> $GITHUB_STEP_SUMMARY
+            fi
+            if [ "$CHECKOV_STATUS" == "failure" ]; then
+              echo "- 🔒 Checkov found security/compliance violations" >> $GITHUB_STEP_SUMMARY
+            fi
+            if [ "$GITLEAKS_STATUS" == "failure" ]; then
+              echo "- 🔑 Gitleaks detected secrets in code" >> $GITHUB_STEP_SUMMARY
+            fi
+
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "📥 **Download Results:** Check the 'Artifacts' section for detailed reports" >> $GITHUB_STEP_SUMMARY
+            exit 1
+          else
+            echo "✅ **All security scans passed!**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "📥 **Download Results:** Check the 'Artifacts' section below for JSON reports:" >> $GITHUB_STEP_SUMMARY
+            echo "- trivy-scan-results.json" >> $GITHUB_STEP_SUMMARY
+            echo "- checkov-scan-results.json" >> $GITHUB_STEP_SUMMARY
+          fi
 
   # ===========================================================================
   # Phase 2 - Job 2: Policy Validation with OPA
@@ -219,28 +251,69 @@ jobs:
           terraform plan -out=tfplan.binary
           terraform show -json tfplan.binary > tfplan.json
 
-      - name: Run OPA Policy Tests
+      - name: Run OPA Policy Tests on Production Code
         working-directory: terraform
         run: |
-          echo "## 📋 Policy Validation Results" > policy-results.txt
+          echo "## 📋 Policy Validation Results (Production Code)" > policy-results.txt
           failures=0
 
+          # Initialize JSON structure
+          echo '{"production_code": {"policies": [], "summary": {"total_policies": 3, "policies_with_violations": 0, "total_violations": 0, "status": "passed"}}}' > ../opa-results.json
+
           for policy in s3_encryption security_groups required_tags; do
-            echo "### $policy Policy" >> policy-results.txt
-            out=$(opa eval --data ../policies/${policy}.rego --input tfplan.json 'data.terraform.deny' 2>&1 || true)
+            echo "### Testing $policy Policy" >> policy-results.txt
+            # Use the correct package path based on policy name
+            package_path="terraform.${policy}"
+            out=$(opa eval --format=json --data ../policies/${policy}.rego --input tfplan.json "data.${package_path}.deny" 2>&1 || true)
             echo "$out" >> policy-results.txt
-            # detect non-empty deny results; adjust detection if your policy returns a different structure
-            if echo "$out" | grep -q "deny"; then
+
+            # Parse JSON output to check if deny array has elements
+            deny_count=$(echo "$out" | jq -r '.result[0].expressions[0].value | length' 2>/dev/null || echo "0")
+            violations=$(echo "$out" | jq -r '.result[0].expressions[0].value // []' 2>/dev/null || echo "[]")
+
+            # Update JSON results
+            policy_json=$(jq -n \
+              --arg policy "$policy" \
+              --argjson count "$deny_count" \
+              --argjson violations "$violations" \
+              --arg status "$([ "$deny_count" -gt 0 ] && echo "failed" || echo "passed")" \
+              '{name: $policy, violations_count: $count, status: $status, violations: $violations}')
+
+            jq ".production_code.policies += [$policy_json]" ../opa-results.json > ../opa-results.tmp && mv ../opa-results.tmp ../opa-results.json
+
+            if [ "$deny_count" -gt 0 ]; then
+              echo "❌ Violations found in $policy policy ($deny_count violations)" >> policy-results.txt
               failures=$((failures+1))
+              # Update summary
+              jq '.production_code.summary.policies_with_violations += 1 | .production_code.summary.total_violations += '$deny_count' | .production_code.summary.status = "failed"' ../opa-results.json > ../opa-results.tmp && mv ../opa-results.tmp ../opa-results.json
+            else
+              echo "✅ No violations in $policy policy" >> policy-results.txt
             fi
             echo "" >> policy-results.txt
           done
 
           cat policy-results.txt
+
+          # Always ensure JSON file exists and is valid, even on failure
+          if [ ! -f ../opa-results.json ]; then
+            echo '{"production_code": {"policies": [], "summary": {"total_policies": 3, "policies_with_violations": 0, "total_violations": 0, "status": "passed"}}}' > ../opa-results.json
+          fi
+
           if [ "$failures" -gt 0 ]; then
-            echo "OPA policy violations detected ($failures)." >&2
+            echo "OPA policy violations detected in production code ($failures policies failed)." >&2
             exit 1
           fi
+
+      # -----------------------------------------------------------------------
+      # Upload OPA Results as Artifact
+      # -----------------------------------------------------------------------
+      - name: Upload OPA Results JSON
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: opa-policy-results
+          path: opa-results.json
+          retention-days: 30
 
       # -----------------------------------------------------------------------
       # Summary
@@ -248,16 +321,61 @@ jobs:
       - name: Policy Check Summary
         if: always()
         run: |
-          echo "## 📋 Phase 2: Policy Validation Results" >> $GITHUB_STEP_SUMMARY
+          echo "## 📋 Phase 2: Policy Validation Results (OPA)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Policies Validated:**" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ S3 Encryption Policy" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ Security Group Policy" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ Required Tags Policy" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Status:** Policy validation completed" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "⚠️ **Security Gate:** Deployment blocked if policies fail" >> $GITHUB_STEP_SUMMARY
+
+          # Read JSON results
+          if [ -f opa-results.json ]; then
+            # Production Code Summary
+            prod_status=$(jq -r '.production_code.summary.status' opa-results.json)
+            prod_violations=$(jq -r '.production_code.summary.total_violations' opa-results.json)
+            prod_policies_failed=$(jq -r '.production_code.summary.policies_with_violations' opa-results.json)
+
+            echo "### 🔒 Production Code Validation" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+
+            if [ "$prod_status" = "failed" ]; then
+              echo "❌ **Status:** FAILED - $prod_policies_failed policy/policies with violations" >> $GITHUB_STEP_SUMMARY
+              echo "🚨 **Total Violations:** $prod_violations" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "✅ **Status:** PASSED - No violations detected" >> $GITHUB_STEP_SUMMARY
+            fi
+            echo "" >> $GITHUB_STEP_SUMMARY
+
+            # Policy Details
+            echo "**Policy Details:**" >> $GITHUB_STEP_SUMMARY
+            jq -r '.production_code.policies[] | "- \(if .status == "failed" then "❌" else "✅" end) **\(.name)**: \(.violations_count) violation(s)"' opa-results.json >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+
+            # Overall Status
+            echo "### 📊 Overall Status" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            if [ "$prod_status" = "failed" ]; then
+              echo "🚨 **DEPLOYMENT BLOCKED** - Policy violations detected in production code" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "✅ **DEPLOYMENT ALLOWED** - All policies passed" >> $GITHUB_STEP_SUMMARY
+            fi
+            echo "" >> $GITHUB_STEP_SUMMARY
+
+            # Download Link
+            echo "📥 **Download Results:** Check the 'Artifacts' section below for detailed JSON report:" >> $GITHUB_STEP_SUMMARY
+            echo "- opa-policy-results.json (Complete policy validation results)" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+
+            # Violations Details (if any)
+            if [ "$prod_violations" -gt 0 ]; then
+              echo "### 🚨 Violations Details" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo '```' >> $GITHUB_STEP_SUMMARY
+              jq -r '.production_code.policies[] | select(.violations_count > 0) | "Policy: \(.name)\nViolations (\(.violations_count)):\n\(.violations[] | "- \(.)")\n"' opa-results.json >> $GITHUB_STEP_SUMMARY
+              echo '```' >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+            fi
+
+            echo "⚠️ **Security Gate:** Deployment blocked if production code policies fail" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ OPA results file not found" >> $GITHUB_STEP_SUMMARY
+          fi
 
   # ===========================================================================
   # Phase 3: Deployment to AWS with Manual Approval

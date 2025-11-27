@@ -1,3 +1,4 @@
+
 # Main Terraform Configuration
 # Purpose: Defines the AWS infrastructure resources
 # Status: Optimized for DevSecOps Thesis & AWS Free Tier
@@ -280,32 +281,31 @@ resource "aws_security_group" "web_server" {
   description = "Security group for web server - allows HTTP/HTTPS. SSH removed for SSM."
   vpc_id      = aws_vpc.main.id
 
-  # Inbound rule: Allow HTTP (port 80) from anywhere
+  # Inbound rule: Allow HTTP (port 80)
   ingress {
-    description = "HTTP from anywhere"
+    description = "HTTP from vpn"
     from_port   = 80
     to_port     = 80
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = ["10.0.0.0/8"]
   }
 
-  # Inbound rule: Allow HTTPS (port 443) from anywhere
+  # Inbound rule: Allow HTTPS (port 443)
   ingress {
-    description = "HTTPS from anywhere"
+    description = "HTTPS from vpn"
     from_port   = 443
     to_port     = 443
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = ["10.0.0.0/8"]
   }
 
-  # Outbound rule: Allow all traffic
-  #trivy:ignore:AVD-AWS-0104
+  # Outbound rule
   egress {
-    description = "Allow all outbound traffic"
+    description = "Allow outbound traffic"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = ["10.0.0.0/8"]
   }
 
   tags = merge(
@@ -395,8 +395,8 @@ resource "aws_s3_bucket_versioning" "data" {
 }
 
 # Enable server-side encryption
+# Note: Encryption is always enabled for security compliance with OPA policies
 resource "aws_s3_bucket_server_side_encryption_configuration" "data" {
-  count  = var.enable_s3_encryption ? 1 : 0
   bucket = aws_s3_bucket.data.id
 
   rule {

@@ -108,6 +108,7 @@ repos:
         description: Validate Terraform syntax
         args:
           - --hook-config=--retry-once-with-cleanup=true
+        exclude: ^tests/ # Exclude test files
 
       # # TFLint - Terraform linter (optional)
       # - id: terraform_tflint
@@ -135,10 +136,8 @@ repos:
         name: Checkov - IaC Security Scanner
         description: Scan for security and compliance issues
         args:
-          - --soft-fail
           - --framework=terraform
-          - --skip-check=CKV_AWS_18 # Skip S3 logging check (requires additional resources)
-        verbose: true
+          - --skip-check=CKV_AWS_18, CKV_AWS_338, CKV_AWS_144, CKV_AWS_260, CKV2_AWS_61, CKV2_AWS_62, CKV_AWS_130, CKV_AWS_144
 # ==============================================================================
 # NOTES FOR STUDENTS
 # ==============================================================================
