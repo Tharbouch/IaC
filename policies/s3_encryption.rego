@@ -371,6 +371,29 @@ has_encryption_config(bucket_address) if {
     bucket_ref == bucket_id
 }
 
+# Alternative: Check if bucket reference matches resolved bucket ID (handle computed values)
+has_encryption_config(bucket_address) if {
+    # Find the bucket resource
+    bucket_resource := input.resource_changes[_]
+    bucket_resource.type == "aws_s3_bucket"
+    bucket_resource.address == bucket_address
+
+    # Get resolved bucket ID (if available)
+    bucket_id := bucket_resource.change.after.id
+    is_string(bucket_id)
+
+    # Find encryption config
+    encryption := input.resource_changes[_]
+    encryption.type == "aws_s3_bucket_server_side_encryption_configuration"
+
+    # Get bucket reference (could be resolved value or computed)
+    bucket_ref := encryption.change.after.bucket
+
+    # Check if reference matches resolved bucket ID (string comparison)
+    is_string(bucket_ref)
+    bucket_ref == bucket_id
+}
+
 has_encryption_config(bucket_address) if {
     # Find the bucket resource
     bucket_resource := input.resource_changes[_]
@@ -465,6 +488,48 @@ has_encryption_config(bucket_address) if {
     bucket_ref["value"]
     is_string(bucket_ref["value"])
     references_bucket(bucket_ref["value"], bucket_address)
+}
+
+# Helper function to extract base resource name (remove array index if present)
+extract_resource_base_name(resource_name) := base_name if {
+    contains(resource_name, "[")
+    base_name := split(resource_name, "[")[0]
+}
+
+extract_resource_base_name(resource_name) := base_name if {
+    not contains(resource_name, "[")
+    base_name := resource_name
+}
+
+# Fallback: Check if encryption config exists by resource address pattern
+# This handles cases where the reference format is not recognized but the resource exists
+has_encryption_config(bucket_address) if {
+    # Find the bucket resource
+    bucket_resource := input.resource_changes[_]
+    bucket_resource.type == "aws_s3_bucket"
+    bucket_resource.address == bucket_address
+
+    # Extract resource name from bucket address (e.g., "aws_s3_bucket.data" -> "data")
+    parts := split(bucket_address, ".")
+    count(parts) == 2
+    bucket_resource_name := parts[1]
+
+    # Find encryption config with matching resource name
+    # The encryption config should be named similarly (e.g., "aws_s3_bucket_server_side_encryption_configuration.data")
+    encryption := input.resource_changes[_]
+    encryption.type == "aws_s3_bucket_server_side_encryption_configuration"
+
+    # Check if encryption resource address contains the bucket resource name
+    # This handles cases like "aws_s3_bucket_server_side_encryption_configuration.data"
+    encryption_parts := split(encryption.address, ".")
+    count(encryption_parts) >= 2
+    encryption_resource_name := encryption_parts[1]
+
+    # Remove any array index from resource name (e.g., "data[0]" -> "data")
+    encryption_base_name := extract_resource_base_name(encryption_resource_name)
+
+    # Match if resource names are the same
+    encryption_base_name == bucket_resource_name
 }
 
 # ==============================================================================
