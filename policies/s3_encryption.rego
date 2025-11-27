@@ -44,12 +44,57 @@ deny contains msg if {
 # HELPER FUNCTIONS
 # ==============================================================================
 
+# Extract base resource address from a Terraform reference
+# This handles references like "aws_s3_bucket.data.id" -> "aws_s3_bucket.data"
+extract_base_address(ref_string) := base_address if {
+    is_string(ref_string)
+    # Split by dots and take first two parts (resource_type.resource_name)
+    parts := split(ref_string, ".")
+    count(parts) >= 2
+    base_address := sprintf("%s.%s", [parts[0], parts[1]])
+}
+
+# Convert any reference format to a string representation for comparison
+# This helps handle various Terraform plan JSON structures
+reference_to_string(ref) := ref_str if {
+    is_string(ref)
+    ref_str := ref
+}
+
+reference_to_string(ref) := ref_str if {
+    is_object(ref)
+    ref["__tfmeta"]
+    ref["__tfmeta"]["path"]
+    ref_str := ref["__tfmeta"]["path"]
+}
+
+reference_to_string(ref) := ref_str if {
+    is_object(ref)
+    ref["expression"]
+    is_string(ref["expression"])
+    ref_str := ref["expression"]
+}
+
+reference_to_string(ref) := ref_str if {
+    is_object(ref)
+    ref["reference"]
+    is_string(ref["reference"])
+    ref_str := ref["reference"]
+}
+
+reference_to_string(ref) := ref_str if {
+    is_object(ref)
+    ref["resource_address"]
+    ref_str := ref["resource_address"]
+}
+
 # Check if a reference points to a specific bucket address
 # Handles multiple formats:
 # 1. Direct string match: "aws_s3_bucket.bucket_name"
 # 2. String with attribute: "aws_s3_bucket.bucket_name.id"
 # 3. Computed value object: {"__tfmeta": {"path": "aws_s3_bucket.bucket_name"}}
 # 4. Resolved value: actual bucket ID/name string
+# 5. Terraform plan reference objects with various structures
 references_bucket(ref, bucket_address) if {
     # Case 1: Direct string match
     is_string(ref)
@@ -68,6 +113,9 @@ references_bucket(ref, bucket_address) if {
     contains(ref, bucket_address)
     # Ensure it's a proper reference format
     startswith(ref, "aws_")
+    # Extract base address and compare
+    base := extract_base_address(ref)
+    base == bucket_address
 }
 
 references_bucket(ref, bucket_address) if {
@@ -93,13 +141,15 @@ references_bucket(ref, bucket_address) if {
 }
 
 references_bucket(ref, bucket_address) if {
-    # Case 3c: Computed value object with path that has attribute
+    # Case 3c: Computed value object with path that contains bucket address
     is_object(ref)
     ref["__tfmeta"]
     ref["__tfmeta"]["path"]
     path := ref["__tfmeta"]["path"]
     is_string(path)
-    startswith(path, sprintf("%s.", [bucket_address]))
+    # Extract base address from path and compare
+    base := extract_base_address(path)
+    base == bucket_address
 }
 
 references_bucket(ref, bucket_address) if {
@@ -134,8 +184,20 @@ references_bucket(ref, bucket_address) if {
     is_object(ref)
     ref["expression"]
     is_string(ref["expression"])
+    expr := ref["expression"]
     # Expression might be a string like "aws_s3_bucket.data.id"
-    startswith(ref["expression"], sprintf("%s.", [bucket_address]))
+    startswith(expr, sprintf("%s.", [bucket_address]))
+}
+
+references_bucket(ref, bucket_address) if {
+    # Case 7b: Handle references in expression - extract base address
+    is_object(ref)
+    ref["expression"]
+    is_string(ref["expression"])
+    expr := ref["expression"]
+    # Extract base address from expression
+    base := extract_base_address(expr)
+    base == bucket_address
 }
 
 references_bucket(ref, bucket_address) if {
@@ -143,8 +205,20 @@ references_bucket(ref, bucket_address) if {
     is_object(ref)
     ref["reference"]
     is_string(ref["reference"])
+    ref_str := ref["reference"]
     # Reference might be a string like "aws_s3_bucket.data.id"
-    startswith(ref["reference"], sprintf("%s.", [bucket_address]))
+    startswith(ref_str, sprintf("%s.", [bucket_address]))
+}
+
+references_bucket(ref, bucket_address) if {
+    # Case 8b: Handle references in "reference" field - extract base address
+    is_object(ref)
+    ref["reference"]
+    is_string(ref["reference"])
+    ref_str := ref["reference"]
+    # Extract base address from reference
+    base := extract_base_address(ref_str)
+    base == bucket_address
 }
 
 references_bucket(ref, bucket_address) if {
@@ -152,6 +226,27 @@ references_bucket(ref, bucket_address) if {
     is_object(ref)
     ref["references"]
     bucket_address == ref["references"][_]
+}
+
+references_bucket(ref, bucket_address) if {
+    # Case 10: Universal approach - convert any reference to string and check
+    # This is a fallback that tries to extract the reference from any structure
+    ref_str := reference_to_string(ref)
+    # Direct match
+    ref_str == bucket_address
+}
+
+references_bucket(ref, bucket_address) if {
+    # Case 10b: Universal approach - check if string representation starts with bucket address
+    ref_str := reference_to_string(ref)
+    startswith(ref_str, sprintf("%s.", [bucket_address]))
+}
+
+references_bucket(ref, bucket_address) if {
+    # Case 10c: Universal approach - extract base address from string representation
+    ref_str := reference_to_string(ref)
+    base := extract_base_address(ref_str)
+    base == bucket_address
 }
 
 # Check if encryption configuration exists for a bucket
@@ -166,15 +261,15 @@ has_encryption_config(bucket_address) if {
     encryption.type == "aws_s3_bucket_server_side_encryption_configuration"
 
     # Get the bucket reference from encryption config (can be string, object, or computed)
-    # Handle both after and before values
-    bucket_ref_after := encryption.change.after.bucket
-    bucket_ref_before := encryption.change.before.bucket
+    # Handle cases where bucket might be in after or before
+    bucket_ref := encryption.change.after.bucket
+    bucket_ref != null
 
     # Check if reference points to our bucket (handles all formats)
-    # Try after value first
-    references_bucket(bucket_ref_after, bucket_address)
+    references_bucket(bucket_ref, bucket_address)
 }
 
+# Alternative: Check if encryption config references bucket via before value
 has_encryption_config(bucket_address) if {
     # Find the bucket resource
     bucket_resource := input.resource_changes[_]
@@ -185,10 +280,73 @@ has_encryption_config(bucket_address) if {
     encryption := input.resource_changes[_]
     encryption.type == "aws_s3_bucket_server_side_encryption_configuration"
 
-    # Check before value (for updates or when after is null)
-    bucket_ref_before := encryption.change.before.bucket
-    references_bucket(bucket_ref_before, bucket_address)
+    # Check before value (for updates or when after is null/undefined)
+    bucket_ref := encryption.change.before.bucket
+    bucket_ref != null
+    references_bucket(bucket_ref, bucket_address)
 }
+
+# Additional check: Try to match by converting reference to string and checking
+has_encryption_config(bucket_address) if {
+    # Find the bucket resource
+    bucket_resource := input.resource_changes[_]
+    bucket_resource.type == "aws_s3_bucket"
+    bucket_resource.address == bucket_address
+
+    # Find encryption config
+    encryption := input.resource_changes[_]
+    encryption.type == "aws_s3_bucket_server_side_encryption_configuration"
+
+    # Get bucket reference (try after first, then before)
+    bucket_ref := encryption.change.after.bucket
+    bucket_ref != null
+
+    # Convert to string and check
+    ref_str := reference_to_string(bucket_ref)
+    # Check if it matches or starts with bucket address
+    ref_str == bucket_address
+}
+
+has_encryption_config(bucket_address) if {
+    # Find the bucket resource
+    bucket_resource := input.resource_changes[_]
+    bucket_resource.type == "aws_s3_bucket"
+    bucket_resource.address == bucket_address
+
+    # Find encryption config
+    encryption := input.resource_changes[_]
+    encryption.type == "aws_s3_bucket_server_side_encryption_configuration"
+
+    # Get bucket reference from before if after is null
+    bucket_ref := encryption.change.before.bucket
+    bucket_ref != null
+
+    # Convert to string and check
+    ref_str := reference_to_string(bucket_ref)
+    # Check if it matches or starts with bucket address
+    ref_str == bucket_address
+}
+
+has_encryption_config(bucket_address) if {
+    # Find the bucket resource
+    bucket_resource := input.resource_changes[_]
+    bucket_resource.type == "aws_s3_bucket"
+    bucket_resource.address == bucket_address
+
+    # Find encryption config
+    encryption := input.resource_changes[_]
+    encryption.type == "aws_s3_bucket_server_side_encryption_configuration"
+
+    # Get bucket reference
+    bucket_ref := encryption.change.after.bucket
+    bucket_ref != null
+
+    # Convert to string and extract base address
+    ref_str := reference_to_string(bucket_ref)
+    base := extract_base_address(ref_str)
+    base == bucket_address
+}
+
 
 # Alternative: Check if bucket reference matches resolved bucket ID or name
 has_encryption_config(bucket_address) if {
