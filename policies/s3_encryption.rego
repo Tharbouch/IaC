@@ -63,6 +63,14 @@ references_bucket(ref, bucket_address) if {
 }
 
 references_bucket(ref, bucket_address) if {
+    # Case 2b: String reference that contains bucket address (for cases where format might vary)
+    is_string(ref)
+    contains(ref, bucket_address)
+    # Ensure it's a proper reference format
+    startswith(ref, "aws_")
+}
+
+references_bucket(ref, bucket_address) if {
     # Case 3: Computed value object with __tfmeta.path
     is_object(ref)
     ref["__tfmeta"]
@@ -74,14 +82,14 @@ references_bucket(ref, bucket_address) if {
 }
 
 references_bucket(ref, bucket_address) if {
-    # Case 3b: Computed value object with path that starts with bucket address (exact match)
+    # Case 3b: Computed value object with path that has attribute access
     is_object(ref)
     ref["__tfmeta"]
     ref["__tfmeta"]["path"]
     path := ref["__tfmeta"]["path"]
     is_string(path)
-    # Path exactly matches bucket address
-    path == bucket_address
+    # Path starts with bucket address followed by attribute
+    startswith(path, sprintf("%s.", [bucket_address]))
 }
 
 references_bucket(ref, bucket_address) if {
@@ -111,6 +119,41 @@ references_bucket(ref, bucket_address) if {
     ref[_] == bucket_address
 }
 
+references_bucket(ref, bucket_address) if {
+    # Case 6: Handle references stored in expressions or expressions_after
+    # Some Terraform plans store references in expression structures
+    is_object(ref)
+    ref["expressions"]
+    expr := ref["expressions"][_]
+    expr["references"]
+    bucket_address == expr["references"][_]
+}
+
+references_bucket(ref, bucket_address) if {
+    # Case 7: Handle references in expression_after structure
+    is_object(ref)
+    ref["expression"]
+    is_string(ref["expression"])
+    # Expression might be a string like "aws_s3_bucket.data.id"
+    startswith(ref["expression"], sprintf("%s.", [bucket_address]))
+}
+
+references_bucket(ref, bucket_address) if {
+    # Case 8: Handle references that might be in a "reference" field
+    is_object(ref)
+    ref["reference"]
+    is_string(ref["reference"])
+    # Reference might be a string like "aws_s3_bucket.data.id"
+    startswith(ref["reference"], sprintf("%s.", [bucket_address]))
+}
+
+references_bucket(ref, bucket_address) if {
+    # Case 9: Handle references in "references" array
+    is_object(ref)
+    ref["references"]
+    bucket_address == ref["references"][_]
+}
+
 # Check if encryption configuration exists for a bucket
 has_encryption_config(bucket_address) if {
     # Find the bucket resource
@@ -123,10 +166,28 @@ has_encryption_config(bucket_address) if {
     encryption.type == "aws_s3_bucket_server_side_encryption_configuration"
 
     # Get the bucket reference from encryption config (can be string, object, or computed)
-    bucket_ref := encryption.change.after.bucket
+    # Handle both after and before values
+    bucket_ref_after := encryption.change.after.bucket
+    bucket_ref_before := encryption.change.before.bucket
 
     # Check if reference points to our bucket (handles all formats)
-    references_bucket(bucket_ref, bucket_address)
+    # Try after value first
+    references_bucket(bucket_ref_after, bucket_address)
+}
+
+has_encryption_config(bucket_address) if {
+    # Find the bucket resource
+    bucket_resource := input.resource_changes[_]
+    bucket_resource.type == "aws_s3_bucket"
+    bucket_resource.address == bucket_address
+
+    # Find encryption config that references this bucket
+    encryption := input.resource_changes[_]
+    encryption.type == "aws_s3_bucket_server_side_encryption_configuration"
+
+    # Check before value (for updates or when after is null)
+    bucket_ref_before := encryption.change.before.bucket
+    references_bucket(bucket_ref_before, bucket_address)
 }
 
 # Alternative: Check if bucket reference matches resolved bucket ID or name
@@ -197,6 +258,55 @@ has_encryption_config(bucket_address) if {
     # Check before value (for updates)
     bucket_ref_before := encryption.change.before.bucket
     references_bucket(bucket_ref_before, bucket_address)
+}
+
+# Handle resources with count/index (e.g., aws_s3_bucket_server_side_encryption_configuration.data[0])
+has_encryption_config(bucket_address) if {
+    # Find the bucket resource
+    bucket_resource := input.resource_changes[_]
+    bucket_resource.type == "aws_s3_bucket"
+    bucket_resource.address == bucket_address
+
+    # Find encryption config (may have index like [0] in address)
+    encryption := input.resource_changes[_]
+    encryption.type == "aws_s3_bucket_server_side_encryption_configuration"
+
+    # Extract base address from encryption resource (remove index if present)
+    # Address might be like "aws_s3_bucket_server_side_encryption_configuration.data[0]"
+    # or "aws_s3_bucket_server_side_encryption_configuration.data"
+    base_encryption_address := encryption.address
+    # Check if it references our bucket
+    bucket_ref := encryption.change.after.bucket
+
+    # Try to match reference
+    references_bucket(bucket_ref, bucket_address)
+}
+
+# Additional check: Handle cases where reference might be in a different format
+# Some Terraform plans use different structures for references
+has_encryption_config(bucket_address) if {
+    # Find the bucket resource
+    bucket_resource := input.resource_changes[_]
+    bucket_resource.type == "aws_s3_bucket"
+    bucket_resource.address == bucket_address
+
+    # Get resolved bucket ID (if available)
+    bucket_id := bucket_resource.change.after.id
+
+    # Find encryption config
+    encryption := input.resource_changes[_]
+    encryption.type == "aws_s3_bucket_server_side_encryption_configuration"
+
+    # Get bucket reference
+    bucket_ref := encryption.change.after.bucket
+
+    # Check if it's an object that might contain the reference in a nested structure
+    is_object(bucket_ref)
+    # Look for common reference patterns in objects
+    # Some plans use nested structures like {"value": "aws_s3_bucket.data.id"}
+    bucket_ref["value"]
+    is_string(bucket_ref["value"])
+    references_bucket(bucket_ref["value"], bucket_address)
 }
 
 # ==============================================================================
