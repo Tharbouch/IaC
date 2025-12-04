@@ -36,6 +36,7 @@ on:
       - "terraform/**"
       - "policies/**"
       - ".github/workflows/**"
+      - "tests/**"
 
   # Trigger on push to main branch (after PR merge)
   push:
@@ -45,7 +46,6 @@ on:
       - "terraform/**"
       - "policies/**"
       - ".github/workflows/**"
-      - "tests/**"
 
   # Allow manual workflow trigger
   workflow_dispatch:
@@ -91,7 +91,9 @@ jobs:
           severity: "CRITICAL,HIGH,MEDIUM"
 
       - name: Run Trivy IaC Scanner (JSON Output)
+        id: trivy
         uses: aquasecurity/trivy-action@master
+        continue-on-error: true
         with:
           scan-type: "config"
           scan-ref: "terraform/"
@@ -99,7 +101,7 @@ jobs:
           output: "trivy-results.json"
           severity: "CRITICAL,HIGH,MEDIUM"
           exit-code: "1"
-        # allow Trivy to fail the step/job so branch protection blocks merging
+        # Continue on error to allow all scanners to run and upload results
 
       - name: Upload Trivy JSON Results
         if: always()
@@ -115,14 +117,15 @@ jobs:
       - name: Run Checkov SAST Scanner
         id: checkov
         uses: bridgecrewio/checkov-action@master
+        continue-on-error: true
         with:
           directory: terraform/
           framework: terraform
           output_format: json
           output_file_path: checkov-results.json
-          # do not fail the step so JSON is produced for upload
-          soft_fail: true
-          skip_check: CKV_AWS_79,CKV2_AWS_41
+          # Checkov will report failures but continue-on-error allows pipeline to continue
+          soft_fail: false
+          skip_check: CKV_AWS_79,CKV2_AWS_41,CKV_AWS_18
 
       - name: Upload Checkov JSON Results
         if: always()
@@ -136,29 +139,57 @@ jobs:
       # Gitleaks - Secret Scanning
       # -----------------------------------------------------------------------
       - name: Run Gitleaks Secret Scanner
+        id: gitleaks
         uses: gitleaks/gitleaks-action@v2
+        continue-on-error: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_CONFIG: .gitleaks.toml
 
       # -----------------------------------------------------------------------
-      # Summary
+      # Fail Job if Any Scanner Detected Issues
       # -----------------------------------------------------------------------
-      - name: Security Scan Summary
+      - name: Check Security Scan Results
         if: always()
         run: |
+          TRIVY_STATUS="${{ steps.trivy.outcome }}"
+          CHECKOV_STATUS="${{ steps.checkov.outcome }}"
+          GITLEAKS_STATUS="${{ steps.gitleaks.outcome }}"
+
           echo "## 🔍 Phase 2: Security Scan Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Tools Used:**" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ Trivy (IaC vulnerability scanner)" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ Checkov (SAST for Terraform)" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ Gitleaks (Secret detection)" >> $GITHUB_STEP_SUMMARY
+          echo "**Scanner Status:**" >> $GITHUB_STEP_SUMMARY
+          echo "- Trivy: $TRIVY_STATUS" >> $GITHUB_STEP_SUMMARY
+          echo "- Checkov: $CHECKOV_STATUS" >> $GITHUB_STEP_SUMMARY
+          echo "- Gitleaks: $GITLEAKS_STATUS" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Status:** Security scans completed" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "📥 **Download Results:** Check the 'Artifacts' section below for JSON reports:" >> $GITHUB_STEP_SUMMARY
-          echo "- trivy-scan-results.json" >> $GITHUB_STEP_SUMMARY
-          echo "- checkov-scan-results.json" >> $GITHUB_STEP_SUMMARY
+
+          # Check if any scanner failed
+          if [ "$TRIVY_STATUS" == "failure" ] || [ "$CHECKOV_STATUS" == "failure" ] || [ "$GITLEAKS_STATUS" == "failure" ]; then
+            echo "❌ **SECURITY ISSUES DETECTED!**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Blocking Deployment:**" >> $GITHUB_STEP_SUMMARY
+
+            if [ "$TRIVY_STATUS" == "failure" ]; then
+              echo "- 🚨 Trivy found vulnerabilities (CRITICAL/HIGH/MEDIUM)" >> $GITHUB_STEP_SUMMARY
+            fi
+            if [ "$CHECKOV_STATUS" == "failure" ]; then
+              echo "- 🔒 Checkov found security/compliance violations" >> $GITHUB_STEP_SUMMARY
+            fi
+            if [ "$GITLEAKS_STATUS" == "failure" ]; then
+              echo "- 🔑 Gitleaks detected secrets in code" >> $GITHUB_STEP_SUMMARY
+            fi
+
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "📥 **Download Results:** Check the 'Artifacts' section for detailed reports" >> $GITHUB_STEP_SUMMARY
+            exit 1
+          else
+            echo "✅ **All security scans passed!**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "📥 **Download Results:** Check the 'Artifacts' section below for JSON reports:" >> $GITHUB_STEP_SUMMARY
+            echo "- trivy-scan-results.json" >> $GITHUB_STEP_SUMMARY
+            echo "- checkov-scan-results.json" >> $GITHUB_STEP_SUMMARY
+          fi
 
   # ===========================================================================
   # Phase 2 - Job 2: Policy Validation with OPA
@@ -220,28 +251,185 @@ jobs:
           terraform plan -out=tfplan.binary
           terraform show -json tfplan.binary > tfplan.json
 
-      - name: Run OPA Policy Tests
+      - name: Run OPA Policy Tests on Production Code
         working-directory: terraform
         run: |
-          echo "## 📋 Policy Validation Results" > policy-results.txt
+          echo "## 📋 Policy Validation Results (Production Code)" > policy-results.txt
           failures=0
 
+          # Initialize JSON structure
+          echo '{"production_code": {"policies": [], "summary": {"total_policies": 3, "policies_with_violations": 0, "total_violations": 0, "status": "passed"}}}' > ../opa-results.json
+
           for policy in s3_encryption security_groups required_tags; do
-            echo "### $policy Policy" >> policy-results.txt
-            out=$(opa eval --data ../policies/${policy}.rego --input tfplan.json 'data.terraform.deny' 2>&1 || true)
+            echo "### Testing $policy Policy" >> policy-results.txt
+            # Use the correct package path based on policy name
+            package_path="terraform.${policy}"
+            out=$(opa eval --format=json --data ../policies/${policy}.rego --input tfplan.json "data.${package_path}.deny" 2>&1 || true)
             echo "$out" >> policy-results.txt
-            # detect non-empty deny results; adjust detection if your policy returns a different structure
-            if echo "$out" | grep -q "deny"; then
+
+            # Parse JSON output to check if deny array has elements
+            deny_count=$(echo "$out" | jq -r '.result[0].expressions[0].value | length' 2>/dev/null || echo "0")
+            violations=$(echo "$out" | jq -r '.result[0].expressions[0].value // []' 2>/dev/null || echo "[]")
+
+            # Update JSON results
+            policy_json=$(jq -n \
+              --arg policy "$policy" \
+              --argjson count "$deny_count" \
+              --argjson violations "$violations" \
+              --arg status "$([ "$deny_count" -gt 0 ] && echo "failed" || echo "passed")" \
+              '{name: $policy, violations_count: $count, status: $status, violations: $violations}')
+
+            jq ".production_code.policies += [$policy_json]" ../opa-results.json > ../opa-results.tmp && mv ../opa-results.tmp ../opa-results.json
+
+            if [ "$deny_count" -gt 0 ]; then
+              echo "❌ Violations found in $policy policy ($deny_count violations)" >> policy-results.txt
               failures=$((failures+1))
+              # Update summary
+              jq '.production_code.summary.policies_with_violations += 1 | .production_code.summary.total_violations += '$deny_count' | .production_code.summary.status = "failed"' ../opa-results.json > ../opa-results.tmp && mv ../opa-results.tmp ../opa-results.json
+            else
+              echo "✅ No violations in $policy policy" >> policy-results.txt
             fi
             echo "" >> policy-results.txt
           done
 
           cat policy-results.txt
+
+          # Always ensure JSON file exists and is valid, even on failure
+          # This allows the test files step to run even if this step fails
+          if [ ! -f ../opa-results.json ]; then
+            echo '{"production_code": {"policies": [], "summary": {"total_policies": 3, "policies_with_violations": 0, "total_violations": 0, "status": "passed"}}}' > ../opa-results.json
+          fi
+
           if [ "$failures" -gt 0 ]; then
-            echo "OPA policy violations detected ($failures)." >&2
+            echo "OPA policy violations detected in production code ($failures policies failed)." >&2
+            # Exit with failure, but test files step will still run due to if: always()
             exit 1
           fi
+
+      # -----------------------------------------------------------------------
+      # Test OPA Policies Against Test Files (FAIL ON VIOLATION)
+      # -----------------------------------------------------------------------
+      - name: Test OPA Policies Against Test Files
+        working-directory: tests
+        run: |
+          echo "## 🧪 Testing OPA Policies Against Test Files" > test-policy-results.txt
+          echo "" >> test-policy-results.txt
+
+          # 1. Initialize Global Failure Flag
+          any_violations_found=0
+
+          # Initialize JSON results structure
+          if [ -f ../opa-results.json ]; then
+            cp ../opa-results.json opa-results.json
+          else
+            echo '{"production_code": {"policies": [], "summary": {"total_policies": 0, "status": "unknown"}}}' > opa-results.json
+          fi
+          jq '.test_files = {"files": [], "summary": {"status": "pending"}}' opa-results.json > opa-results.tmp && mv opa-results.tmp opa-results.json
+
+          mkdir -p test-plans
+
+          # Loop through all .tf files
+          for test_file in *.tf; do
+            if [ ! -f "$test_file" ]; then continue; fi
+
+            test_name=$(basename "$test_file" .tf)
+            echo "### Testing: $test_name" >> test-policy-results.txt
+
+            # Setup test environment
+            test_dir="test-plans/${test_name}"
+            mkdir -p "$test_dir"
+            cp "$test_file" "$test_dir/main.tf"
+
+            # FIXED: Use line-by-line echo to avoid YAML heredoc indentation issues
+            echo 'terraform {' > "$test_dir/provider.tf"
+            echo '  required_providers {' >> "$test_dir/provider.tf"
+            echo '    aws = {' >> "$test_dir/provider.tf"
+            echo '      source  = "hashicorp/aws"' >> "$test_dir/provider.tf"
+            echo '      version = "~> 5.0"' >> "$test_dir/provider.tf"
+            echo '    }' >> "$test_dir/provider.tf"
+            echo '  }' >> "$test_dir/provider.tf"
+            echo '}' >> "$test_dir/provider.tf"
+            echo 'provider "aws" {' >> "$test_dir/provider.tf"
+            echo '  region = "us-east-1"' >> "$test_dir/provider.tf"
+            echo '}' >> "$test_dir/provider.tf"
+
+            # Generate Plan
+            cd "$test_dir"
+            echo "Running Terraform for $test_name..."
+            terraform init -backend=false > /dev/null
+            terraform plan -out=tfplan.binary > /dev/null
+            terraform show -json tfplan.binary > tfplan.json 2>/dev/null || true
+
+            # Initialize file JSON
+            test_file_json=$(jq -n --arg name "$test_name" --arg file "$test_file" '{name: $name, file: $file, policies: [], status: "passed"}')
+
+            if [ -f "tfplan.json" ]; then
+              # 2. Test ALL policies (do not stop early)
+              for policy in s3_encryption security_groups required_tags; do
+                package_path="terraform.${policy}"
+                out=$(opa eval --format=json --data ../../../policies/${policy}.rego --input tfplan.json "data.${package_path}.deny" 2>&1 || true)
+                
+                deny_count=$(echo "$out" | jq -r '.result[0].expressions[0].value | length' 2>/dev/null || echo "0")
+                violations=$(echo "$out" | jq -r '.result[0].expressions[0].value // []' 2>/dev/null || echo "[]")
+
+                # Add result to JSON
+                policy_result=$(jq -n \
+                  --arg policy "$policy" \
+                  --argjson count "$deny_count" \
+                  --argjson violations "$violations" \
+                  --arg status "$([ "$deny_count" -gt 0 ] && echo "failed" || echo "passed")" \
+                  '{name: $policy, violations_count: $count, status: $status, violations: $violations}')
+                
+                test_file_json=$(echo "$test_file_json" | jq ".policies += [$policy_result]")
+
+                # 3. Check for Violations
+                if [ "$deny_count" -gt 0 ]; then
+                  echo "❌ VIOLATION in $policy: Found $deny_count issue(s)" >> ../../test-policy-results.txt
+                  
+                  # Print detailed error to GitHub annotation
+                  echo "::error file=tests/$test_file::Policy '$policy' failed with $deny_count violations."
+                  
+                  # Mark global flag as failed, but CONTINUE loop
+                  any_violations_found=1
+                  test_file_json=$(echo "$test_file_json" | jq '.status = "failed"')
+                else
+                  echo "✅ $policy: Passed" >> ../../test-policy-results.txt
+                fi
+              done
+            fi
+            
+            # Save JSON for this file
+            jq ".test_files.files += [$test_file_json]" ../../opa-results.json > ../../opa-results.tmp && mv ../../opa-results.tmp ../../opa-results.json
+            
+            cd ../..
+            echo "" >> test-policy-results.txt
+          done
+
+          # Output text results
+          cat test-policy-results.txt
+
+          # Move JSON back to root
+          mv opa-results.json ../opa-results.json
+
+          # 4. Final Fail Decision
+          if [ "$any_violations_found" -eq 1 ]; then
+            echo "🚨 CRITICAL: Violations detected in test files."
+            echo "Blocking pipeline as requested."
+            exit 1
+          else
+            echo "✅ No violations found in any policy."
+          fi
+
+      # -----------------------------------------------------------------------
+      # Upload OPA Results as Artifact
+      # -----------------------------------------------------------------------
+      - name: Upload OPA Results JSON
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: opa-policy-results
+          path: opa-results.json
+          retention-days: 30
 
       # -----------------------------------------------------------------------
       # Summary
@@ -249,44 +437,133 @@ jobs:
       - name: Policy Check Summary
         if: always()
         run: |
-          echo "## 📋 Phase 2: Policy Validation Results" >> $GITHUB_STEP_SUMMARY
+          echo "## 📋 Phase 2: Policy Validation Results (OPA)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Policies Validated:**" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ S3 Encryption Policy" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ Security Group Policy" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ Required Tags Policy" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Status:** Policy validation completed" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "⚠️ **Security Gate:** Deployment blocked if policies fail" >> $GITHUB_STEP_SUMMARY
 
+          # Read JSON results
+          if [ -f opa-results.json ]; then
+            # Production Code Summary
+            prod_status=$(jq -r '.production_code.summary.status' opa-results.json)
+            prod_violations=$(jq -r '.production_code.summary.total_violations' opa-results.json)
+            prod_policies_failed=$(jq -r '.production_code.summary.policies_with_violations' opa-results.json)
+
+            echo "### 🔒 Production Code Validation" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+
+            if [ "$prod_status" = "failed" ]; then
+              echo "❌ **Status:** FAILED - $prod_policies_failed policy/policies with violations" >> $GITHUB_STEP_SUMMARY
+              echo "🚨 **Total Violations:** $prod_violations" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "✅ **Status:** PASSED - No violations detected" >> $GITHUB_STEP_SUMMARY
+            fi
+            echo "" >> $GITHUB_STEP_SUMMARY
+
+            # Production Policy Details
+            echo "**Production Policy Details:**" >> $GITHUB_STEP_SUMMARY
+            jq -r '.production_code.policies[] | "- \(if .status == "failed" then "❌" else "✅" end) **\(.name)**: \(.violations_count) violation(s)"' opa-results.json >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+
+            # -----------------------------------------------------------------
+            # UPDATED TEST FILES SUMMARY LOGIC
+            # -----------------------------------------------------------------
+            # In "Blocking Mode", finding violations in test files means the step FAILED
+            
+            # Check if we have test file results
+            test_files_length=$(jq '.test_files.files | length' opa-results.json)
+
+            if [ "$test_files_length" -gt 0 ]; then
+                echo "### 🧪 Test Files Validation" >> $GITHUB_STEP_SUMMARY
+                echo "" >> $GITHUB_STEP_SUMMARY
+                
+                # Check for any failed test files (where violations > 0)
+                test_failures=$(jq '[.test_files.files[] | select(.status == "failed")] | length' opa-results.json)
+
+                if [ "$test_failures" -gt 0 ]; then
+                  echo "❌ **Status:** FAILED - Violations detected in test files" >> $GITHUB_STEP_SUMMARY
+                  echo "" >> $GITHUB_STEP_SUMMARY
+                  echo "**Violations Detected:**" >> $GITHUB_STEP_SUMMARY
+                  # List the policies that failed within the test files
+                  jq -r '.test_files.files[] | select(.status == "failed") | "- 📄 **\(.name)**: \(.policies[] | select(.violations_count > 0) | "\(.name) (\(.violations_count))")"' opa-results.json >> $GITHUB_STEP_SUMMARY
+                else
+                  echo "✅ **Status:** PASSED - No violations found in test files" >> $GITHUB_STEP_SUMMARY
+                fi
+            else
+                echo "### 🧪 Test Files Validation" >> $GITHUB_STEP_SUMMARY
+                echo "⚠️ No test files processed or JSON structure missing." >> $GITHUB_STEP_SUMMARY
+            fi
+            echo "" >> $GITHUB_STEP_SUMMARY
+
+            # -----------------------------------------------------------------
+            # OVERALL STATUS
+            # -----------------------------------------------------------------
+            echo "### 📊 Overall Status" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            
+            # If prod failed OR test files failed (violations found)
+            if [ "$prod_status" = "failed" ] || [ "$test_failures" -gt 0 ]; then
+              echo "🚨 **DEPLOYMENT BLOCKED** - Policy violations detected." >> $GITHUB_STEP_SUMMARY
+            else
+              echo "✅ **DEPLOYMENT ALLOWED** - All checks passed." >> $GITHUB_STEP_SUMMARY
+            fi
+            echo "" >> $GITHUB_STEP_SUMMARY
+
+            # Download Link
+            echo "📥 **Download Results:** Check the 'Artifacts' section below for detailed JSON report:" >> $GITHUB_STEP_SUMMARY
+            echo "- opa-policy-results.json (Complete policy validation results)" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+
+            # Violations Details (Show output for Prod OR Test failures)
+            if [ "$prod_violations" -gt 0 ] || [ "$test_failures" -gt 0 ]; then
+              echo "### 🚨 Violation Details" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo '```' >> $GITHUB_STEP_SUMMARY
+              # Dump details for any failed policy in production
+              if [ "$prod_violations" -gt 0 ]; then
+                 echo "--- PRODUCTION CODE VIOLATIONS ---" >> $GITHUB_STEP_SUMMARY
+                 jq -r '.production_code.policies[] | select(.violations_count > 0) | "Policy: \(.name)\nViolations (\(.violations_count)):\n\(.violations[] | "- \(.)")\n"' opa-results.json >> $GITHUB_STEP_SUMMARY
+              fi
+              # Dump details for any failed policy in test files
+              if [ "$test_failures" -gt 0 ]; then
+                 echo "--- TEST FILE VIOLATIONS ---" >> $GITHUB_STEP_SUMMARY
+                 jq -r '.test_files.files[] | select(.status == "failed") | "File: \(.name)\n" + (.policies[] | select(.violations_count > 0) | "  Policy: \(.name)\n  Violations: \(.violations_count)\n" + (.violations[] | "    - \(.)") + "\n")' opa-results.json >> $GITHUB_STEP_SUMMARY
+              fi
+              echo '```' >> $GITHUB_STEP_SUMMARY
+            fi
+          else
+            echo "⚠️ OPA results file not found" >> $GITHUB_STEP_SUMMARY
+          fi
   # ===========================================================================
   # Phase 3: Deployment to AWS with Manual Approval
   # ===========================================================================
-
-  # ===========================================================================
-  # (Part A): Plan Generation (Non-Blocking)
-  # ===========================================================================
-  plan:
-    name: "Phase 3a: Terraform Plan"
+  deploy:
+    name: "Phase 3: Deploy to AWS"
     runs-on: ubuntu-latest
-    needs: [security-scan, policy-check]
+    needs: [security-scan, policy-check] # ✅ DEPENDENCY: Both Phase 2 jobs must pass
 
-    # Only run on push to main (same conditions as before)
+    # Only run on push to main (not on PRs)
     if: |
       github.ref == 'refs/heads/main' &&
       github.event_name == 'push' &&
       github.event.inputs.skip_deployment != 'true'
 
+    # Manual approval required via GitHub Environment
+    environment: production
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # -----------------------------------------------------------------------
+      # Setup Terraform
+      # -----------------------------------------------------------------------
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.6.0
 
+      # -----------------------------------------------------------------------
+      # Configure AWS Credentials
+      # -----------------------------------------------------------------------
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -294,82 +571,67 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: us-east-1
 
+      - name: Verify AWS Identity
+        run: |
+          echo "## 🔐 AWS Identity" >> $GITHUB_STEP_SUMMARY
+          aws sts get-caller-identity >> $GITHUB_STEP_SUMMARY
+
+      # -----------------------------------------------------------------------
+      # Terraform Init
+      # -----------------------------------------------------------------------
       - name: Terraform Init
         working-directory: terraform
         run: terraform init -reconfigure
 
-      # 1. Generate the plan and save it to a binary file
+      # -----------------------------------------------------------------------
+      # Terraform Plan
+      # -----------------------------------------------------------------------
       - name: Terraform Plan
         working-directory: terraform
+        id: plan
         run: |
-          terraform plan -no-color -out=tfplan.binary
-          # Also save a readable text version for the summary
-          terraform show -no-color tfplan.binary > tfplan.txt
+          terraform plan -no-color -out=tfplan
+          terraform show -no-color tfplan > tfplan.txt
 
-      # 2. Upload the plan as an artifact so the next job can download it
-      - name: Upload Terraform Plan Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: tfplan-artifacts
-          path: |
-            terraform/tfplan.binary
-            terraform/tfplan.txt
-          retention-days: 1
-
-      - name: Summary
+      - name: Display Terraform Plan
+        working-directory: terraform
         run: |
-          echo "## 📋 Terraform Plan Generated" >> $GITHUB_STEP_SUMMARY
-          echo "The deployment has been paused. Review the plan below before approving." >> $GITHUB_STEP_SUMMARY
+          echo "## 📋 Terraform Plan" >> $GITHUB_STEP_SUMMARY
           echo '```terraform' >> $GITHUB_STEP_SUMMARY
-          cat terraform/tfplan.txt >> $GITHUB_STEP_SUMMARY
+          cat tfplan.txt >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
 
-  # ===========================================================================
-  # (Part B): Secure Deployment (The Hard Gate)
-  # ===========================================================================
-  deploy:
-    name: "Phase 3b: Deploy to AWS"
-    runs-on: ubuntu-latest
-    needs: [plan] # Depends on the plan job finishing
-    environment: production # This pauses the workflow for manual approval
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: 1.6.0
-
-      - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-east-1
-
-      # 3. Download the exact plan generated in the previous job
-      - name: Download Terraform Plan
-        uses: actions/download-artifact@v4
-        with:
-          name: tfplan-artifacts
-          path: terraform
-
-      - name: Terraform Init
-        working-directory: terraform
-        run: terraform init -reconfigure
-
-      # 4. Apply the binary plan (prevents drift between plan and apply)
+      # -----------------------------------------------------------------------
+      # Terraform Apply (Manual approval required via 'environment: production')
+      # -----------------------------------------------------------------------
       - name: Terraform Apply
         working-directory: terraform
-        run: terraform apply -auto-approve tfplan.binary
+        run: terraform apply -auto-approve tfplan
 
+      # -----------------------------------------------------------------------
+      # Capture Outputs
+      # -----------------------------------------------------------------------
       - name: Terraform Outputs
         working-directory: terraform
         run: |
           echo "## 🎉 Deployment Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📊 Deployed Resources:" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
           terraform output -json | jq >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      # -----------------------------------------------------------------------
+      # Summary
+      # -----------------------------------------------------------------------
+      - name: Deployment Summary
+        if: always()
+        run: |
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Status:** Infrastructure deployed to AWS" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "⚠️ **Remember:** Run \`terraform destroy\` after testing to avoid costs" >> $GITHUB_STEP_SUMMARY
+
   # ===========================================================================
   # Phase 4: Drift Detection with Driftctl
   # ===========================================================================

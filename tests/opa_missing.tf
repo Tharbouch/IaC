@@ -1,44 +1,58 @@
-# Test: Violates OPA (missing tags) but passes SAST (has encryption + security)
+# This file contains INTENTIONAL violations to test the OPA policies.
+# We want the pipeline to DETECT these and BLOCK (turn Red).
 
-resource "aws_s3_bucket" "opa_test" {
-  #checkov:skip=CKV2_AWS_62
-  #checkov:skip=CKV2_AWS_61
-  #checkov:skip=CKV_AWS_144
-  bucket = "opa-test-missing-tags-${random_id.suffix.hex}"
+# NOTE: Provider configuration is handled by the pipeline. Do NOT add a provider block here.
 
-  # Missing required tags: Project, Owner, Environment
-  # This will FAIL OPA but PASS SAST
-}
+# ============================================================================
+# VIOLATION SET 1: TAGGING POLICIES (policies/required_tags.rego)
+# ============================================================================
+# 1. Missing 'CostCenter' tag (Recommended)
+# 2. 'Project' tag is empty (Required - Invalid)
+# 3. 'Owner' tag is not a valid email (Required - Invalid)
+# 4. 'Environment' tag is 'testing' (Required - Invalid)
 
-resource "aws_s3_bucket_server_side_encryption_configuration" "opa_test" {
-  bucket = aws_s3_bucket.opa_test.id
+# checkov:skip=CKV2_AWS_61: "Intentional violation for OPA testing"
+# checkov:skip=CKV_AWS_145: "Intentional violation for OPA testing"
+# checkov:skip=CKV2_AWS_6: "Intentional violation for OPA testing"
+# checkov:skip=CKV_AWS_144: "Intentional violation for OPA testing"
+# checkov:skip=CKV_AWS_19: "Intentional violation for OPA testing"
+resource "aws_s3_bucket" "violation_bucket" {
+  bucket = "policy-violation-bucket-example-unique-123"
 
-  rule {
-    apply_server_side_encryption_by_default {
-      sse_algorithm     = "aws:kms"
-      kms_master_key_id = aws_kms_key.s3.arn
-    }
-    bucket_key_enabled = true
+  tags = {
+    Project     = ""              # Violation: Empty value
+    Owner       = "invalid-owner" # Violation: Invalid email format
+    Environment = "testing"       # Violation: Invalid environment value
+    # CostCenter tag is missing completely
   }
 }
 
-resource "aws_s3_bucket_public_access_block" "opa_test" {
-  bucket = aws_s3_bucket.opa_test.id
+# ============================================================================
+# VIOLATION SET 2: S3 ENCRYPTION (policies/s3_encryption.rego)
+# ============================================================================
+# 5. Missing Encryption Configuration
+# We OMIT the encryption resource entirely.
+# This triggers the OPA rule: "S3 bucket ... does not have encryption enabled"
 
-  block_public_acls       = true
-  block_public_policy     = true
-  ignore_public_acls      = true
-  restrict_public_buckets = true
-}
 
-resource "aws_s3_bucket_versioning" "opa_test" {
-  bucket = aws_s3_bucket.opa_test.id
+# ============================================================================
+# VIOLATION SET 3: SECURITY GROUPS (policies/security_groups.rego)
+# ============================================================================
+# 6. SSH (22) open to 0.0.0.0/0 (Critical)
+# 7. Missing rule description
 
-  versioning_configuration {
-    status = "Enabled"
+# checkov:skip=CKV_AWS_24: "Intentional violation: SSH open to world"
+# checkov:skip=CKV_AWS_260: "Intentional violation: Security group description"
+resource "aws_security_group" "violation_sg" {
+  name        = "violation-sg"
+  description = "Security group with violations"
+  vpc_id      = "vpc-12345678" # Dummy VPC ID
+
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"] # Violation: SSH open to world
+    # Violation: Missing description
   }
-}
-
-resource "random_id" "suffix" {
-  byte_length = 4
 }
