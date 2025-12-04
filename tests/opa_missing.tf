@@ -31,13 +31,9 @@ resource "aws_s3_bucket" "violation_bucket" {
 # VIOLATION SET 2: S3 ENCRYPTION (policies/s3_encryption.rego)
 # ============================================================================
 # 5. Missing Encryption Configuration
-# We omit the encryption resource to trigger the "must have encryption" policy.
+# We OMIT the encryption resource entirely.
+# This triggers the OPA rule: "S3 bucket ... does not have encryption enabled"
 
-# checkov:skip=CKV_AWS_19: "Intentional violation for OPA testing"
-# trivy:ignore:AVD-AWS-0088: "Intentional violation for OPA testing"
-# checkov:skip=CKV2_AWS_6: "Intentional violation for OPA testing"
-
-# (Resource omitted intentionally to trigger violation)
 
 # ============================================================================
 # VIOLATION SET 3: SECURITY GROUPS (policies/security_groups.rego)
