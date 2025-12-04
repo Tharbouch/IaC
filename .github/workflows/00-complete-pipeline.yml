@@ -311,7 +311,6 @@ jobs:
       # -----------------------------------------------------------------------
       - name: Test OPA Policies Against Test Files
         working-directory: tests
-        # REMOVED "if: always()" so the pipeline stops here if this step fails
         run: |
           echo "## 🧪 Testing OPA Policies Against Test Files" > test-policy-results.txt
           echo "" >> test-policy-results.txt
@@ -341,20 +340,18 @@ jobs:
             mkdir -p "$test_dir"
             cp "$test_file" "$test_dir/main.tf"
 
-            # FIXED: Create provider.tf using multi-line heredoc for valid HCL syntax
-            cat > "$test_dir/provider.tf" <<EOF
-            terraform {
-              required_providers {
-                aws = {
-                  source  = "hashicorp/aws"
-                  version = "~> 5.0"
-                }
-              }
-            }
-            provider "aws" {
-              region = "us-east-1"
-            }
-            EOF
+            # FIXED: Use line-by-line echo to avoid YAML heredoc indentation issues
+            echo 'terraform {' > "$test_dir/provider.tf"
+            echo '  required_providers {' >> "$test_dir/provider.tf"
+            echo '    aws = {' >> "$test_dir/provider.tf"
+            echo '      source  = "hashicorp/aws"' >> "$test_dir/provider.tf"
+            echo '      version = "~> 5.0"' >> "$test_dir/provider.tf"
+            echo '    }' >> "$test_dir/provider.tf"
+            echo '  }' >> "$test_dir/provider.tf"
+            echo '}' >> "$test_dir/provider.tf"
+            echo 'provider "aws" {' >> "$test_dir/provider.tf"
+            echo '  region = "us-east-1"' >> "$test_dir/provider.tf"
+            echo '}' >> "$test_dir/provider.tf"
 
             # Generate Plan
             cd "$test_dir"
