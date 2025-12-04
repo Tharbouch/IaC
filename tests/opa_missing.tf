@@ -1,15 +1,6 @@
 # This file is self-contained for OPA testing.
 # It intentionally violates policies to ensure OPA detects them.
-# We include Checkov/Trivy skips to verify that OPA catches what other tools might ignore.
-
-terraform {
-  required_providers {
-    aws = {
-      source  = "hashicorp/aws"
-      version = "~> 5.0"
-    }
-  }
-}
+# The provider configuration is handled by the CI pipeline, so we do NOT define it here.
 
 # VIOLATION 1 & 2: TAGGING POLICIES
 # - Missing 'CostCenter' tag
