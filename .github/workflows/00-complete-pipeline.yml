@@ -330,14 +330,9 @@ jobs:
           mkdir -p test-plans
 
           test_file_count=0
-          echo "PWD: $(pwd)"
-          echo "Listing tests directory:"
-          ls -l tests || echo "tests directory not found"
-          echo "Terraform root listing:"
-          ls -l
 
           # Test each test file
-          for test_file in tests/*.tf; do
+          for test_file in *.tf; do
             if [ ! -f "$test_file" ]; then
               continue
             fi
