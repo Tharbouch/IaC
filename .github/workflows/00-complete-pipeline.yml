@@ -371,8 +371,13 @@ jobs:
 
             # Generate Terraform plan for this test
             cd "$test_dir"
-            terraform init -backend=false > /dev/null 2>&1 || true
-            terraform plan -out=tfplan.binary > /dev/null 2>&1 || true
+            
+            # REMOVED /dev/null so we can see errors in the logs if it fails
+            echo "Running init for $test_name..."
+            terraform init -backend=false
+            
+            echo "Running plan for $test_name..."
+            terraform plan -out=tfplan.binary
 
             # Initialize test file JSON structure
             test_file_json=$(jq -n --arg name "$test_name" --arg file "$test_file" '{name: $name, file: $file, policies: [], status: "passed"}')
