@@ -310,6 +310,7 @@ jobs:
       # Test OPA Policies Against Test Files
       # -----------------------------------------------------------------------
       - name: Test OPA Policies Against Test Files
+        working-directory: tests
         if: always() # Run even if previous step failed
         run: |
           echo "## 🧪 Testing OPA Policies Against Test Files" > test-policy-results.txt
