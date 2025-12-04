@@ -1,8 +1,12 @@
 # This file is self-contained for OPA testing.
 # It intentionally violates policies to ensure OPA detects them.
-# The provider configuration is handled by the CI pipeline, so we do NOT define it here.
 
+# NOTE: Provider configuration is handled by the pipeline. Do NOT add a provider block here.
+
+# ============================================================================
 # VIOLATION 1 & 2: TAGGING POLICIES
+# ============================================================================
+# Violates 'policies/required_tags.rego':
 # - Missing 'CostCenter' tag
 # - 'Project' tag is empty
 # - 'Owner' tag is not a valid email address
@@ -24,23 +28,31 @@ resource "aws_s3_bucket" "violation_bucket" {
   }
 }
 
+# ============================================================================
 # VIOLATION 3: S3 ENCRYPTION
-# - Uses 'AES128' (Invalid)
+# ============================================================================
+# We cannot use 'AES128' because Terraform v5+ crashes with an error before OPA runs.
+# Instead, we OMIT the encryption resource entirely.
+# This triggers the OPA rule: "S3 bucket ... does not have encryption enabled"
 
 # checkov:skip=CKV_AWS_19: "Intentional violation for OPA testing"
 # trivy:ignore:AVD-AWS-0088: "Intentional violation for OPA testing"
 # checkov:skip=CKV2_AWS_6: "Intentional violation for OPA testing"
-resource "aws_s3_bucket_server_side_encryption_configuration" "violation_encryption" {
-  bucket = aws_s3_bucket.violation_bucket.id
 
-  rule {
-    apply_server_side_encryption_by_default {
-      sse_algorithm = "AES128" # Violation: Weak algorithm
-    }
-  }
-}
+# RESOURCE COMMENTED OUT TO TRIGGER "MISSING ENCRYPTION" VIOLATION:
+# resource "aws_s3_bucket_server_side_encryption_configuration" "violation_encryption" {
+#   bucket = aws_s3_bucket.violation_bucket.id
+#   rule {
+#     apply_server_side_encryption_by_default {
+#       sse_algorithm = "AES128" # This crashes Terraform!
+#     }
+#   }
+# }
 
+# ============================================================================
 # VIOLATION 4: SECURITY GROUPS
+# ============================================================================
+# Violates 'policies/security_groups.rego':
 # - SSH (22) open to 0.0.0.0/0
 
 # checkov:skip=CKV_AWS_24: "Intentional violation: SSH open to world"
