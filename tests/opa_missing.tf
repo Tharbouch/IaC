@@ -1,7 +1,3 @@
-provider "aws" {
-  region = "us-east-1"
-}
-
 # VIOLATION 1 & 2: TAGGING POLICIES
 # This resource violates 'policies/required_tags.rego':
 # - Missing 'CostCenter' tag
