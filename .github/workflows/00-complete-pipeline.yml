@@ -458,33 +458,52 @@ jobs:
             fi
             echo "" >> $GITHUB_STEP_SUMMARY
 
-            # Policy Details
-            echo "**Policy Details:**" >> $GITHUB_STEP_SUMMARY
+            # Production Policy Details
+            echo "**Production Policy Details:**" >> $GITHUB_STEP_SUMMARY
             jq -r '.production_code.policies[] | "- \(if .status == "failed" then "❌" else "✅" end) **\(.name)**: \(.violations_count) violation(s)"' opa-results.json >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
 
-            # Test Files Summary
-            test_status=$(jq -r '.test_files.summary.status' opa-results.json)
-            test_total=$(jq -r '.test_files.summary.total_files' opa-results.json)
-            test_successes=$(jq -r '.test_files.summary.expected_violations_detected' opa-results.json)
-            test_failures=$(jq -r '.test_files.summary.missing_violations' opa-results.json)
+            # -----------------------------------------------------------------
+            # UPDATED TEST FILES SUMMARY LOGIC
+            # -----------------------------------------------------------------
+            # In "Blocking Mode", finding violations in test files means the step FAILED
+            
+            # Check if we have test file results
+            test_files_length=$(jq '.test_files.files | length' opa-results.json)
 
-            echo "### 🧪 Test Files Validation" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "**Test Files Analyzed:** $test_total" >> $GITHUB_STEP_SUMMARY
-            echo "- ✅ Expected violations detected: $test_successes" >> $GITHUB_STEP_SUMMARY
-            if [ "$test_failures" -gt 0 ]; then
-              echo "- ⚠️ Missing violations (policies may need adjustment): $test_failures" >> $GITHUB_STEP_SUMMARY
+            if [ "$test_files_length" -gt 0 ]; then
+                echo "### 🧪 Test Files Validation" >> $GITHUB_STEP_SUMMARY
+                echo "" >> $GITHUB_STEP_SUMMARY
+                
+                # Check for any failed test files (where violations > 0)
+                test_failures=$(jq '[.test_files.files[] | select(.status == "failed")] | length' opa-results.json)
+
+                if [ "$test_failures" -gt 0 ]; then
+                  echo "❌ **Status:** FAILED - Violations detected in test files" >> $GITHUB_STEP_SUMMARY
+                  echo "" >> $GITHUB_STEP_SUMMARY
+                  echo "**Violations Detected:**" >> $GITHUB_STEP_SUMMARY
+                  # List the policies that failed within the test files
+                  jq -r '.test_files.files[] | select(.status == "failed") | "- 📄 **\(.name)**: \(.policies[] | select(.violations_count > 0) | "\(.name) (\(.violations_count))")"' opa-results.json >> $GITHUB_STEP_SUMMARY
+                else
+                  echo "✅ **Status:** PASSED - No violations found in test files" >> $GITHUB_STEP_SUMMARY
+                fi
+            else
+                echo "### 🧪 Test Files Validation" >> $GITHUB_STEP_SUMMARY
+                echo "⚠️ No test files processed or JSON structure missing." >> $GITHUB_STEP_SUMMARY
             fi
             echo "" >> $GITHUB_STEP_SUMMARY
 
-            # Overall Status
+            # -----------------------------------------------------------------
+            # OVERALL STATUS
+            # -----------------------------------------------------------------
             echo "### 📊 Overall Status" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            if [ "$prod_status" = "failed" ]; then
-              echo "🚨 **DEPLOYMENT BLOCKED** - Policy violations detected in production code" >> $GITHUB_STEP_SUMMARY
+            
+            # If prod failed OR test files failed (violations found)
+            if [ "$prod_status" = "failed" ] || [ "$test_failures" -gt 0 ]; then
+              echo "🚨 **DEPLOYMENT BLOCKED** - Policy violations detected." >> $GITHUB_STEP_SUMMARY
             else
-              echo "✅ **DEPLOYMENT ALLOWED** - All policies passed" >> $GITHUB_STEP_SUMMARY
+              echo "✅ **DEPLOYMENT ALLOWED** - All checks passed." >> $GITHUB_STEP_SUMMARY
             fi
             echo "" >> $GITHUB_STEP_SUMMARY
 
@@ -493,21 +512,26 @@ jobs:
             echo "- opa-policy-results.json (Complete policy validation results)" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
 
-            # Violations Details (if any)
-            if [ "$prod_violations" -gt 0 ]; then
-              echo "### 🚨 Violations Details" >> $GITHUB_STEP_SUMMARY
+            # Violations Details (Show output for Prod OR Test failures)
+            if [ "$prod_violations" -gt 0 ] || [ "$test_failures" -gt 0 ]; then
+              echo "### 🚨 Violation Details" >> $GITHUB_STEP_SUMMARY
               echo "" >> $GITHUB_STEP_SUMMARY
               echo '```' >> $GITHUB_STEP_SUMMARY
-              jq -r '.production_code.policies[] | select(.violations_count > 0) | "Policy: \(.name)\nViolations (\(.violations_count)):\n\(.violations[] | "- \(.)")\n"' opa-results.json >> $GITHUB_STEP_SUMMARY
+              # Dump details for any failed policy in production
+              if [ "$prod_violations" -gt 0 ]; then
+                 echo "--- PRODUCTION CODE VIOLATIONS ---" >> $GITHUB_STEP_SUMMARY
+                 jq -r '.production_code.policies[] | select(.violations_count > 0) | "Policy: \(.name)\nViolations (\(.violations_count)):\n\(.violations[] | "- \(.)")\n"' opa-results.json >> $GITHUB_STEP_SUMMARY
+              fi
+              # Dump details for any failed policy in test files
+              if [ "$test_failures" -gt 0 ]; then
+                 echo "--- TEST FILE VIOLATIONS ---" >> $GITHUB_STEP_SUMMARY
+                 jq -r '.test_files.files[] | select(.status == "failed") | "File: \(.name)\n" + (.policies[] | select(.violations_count > 0) | "  Policy: \(.name)\n  Violations: \(.violations_count)\n" + (.violations[] | "    - \(.)") + "\n")' opa-results.json >> $GITHUB_STEP_SUMMARY
+              fi
               echo '```' >> $GITHUB_STEP_SUMMARY
-              echo "" >> $GITHUB_STEP_SUMMARY
             fi
-
-            echo "⚠️ **Security Gate:** Deployment blocked if production code policies fail" >> $GITHUB_STEP_SUMMARY
           else
             echo "⚠️ OPA results file not found" >> $GITHUB_STEP_SUMMARY
           fi
-
   # ===========================================================================
   # Phase 3: Deployment to AWS with Manual Approval
   # ===========================================================================
