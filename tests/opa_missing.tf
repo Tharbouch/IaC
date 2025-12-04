@@ -1,44 +1,41 @@
-# Test: Violates OPA (missing tags) but passes SAST (has encryption + security)
-
-resource "aws_s3_bucket" "opa_test" {
-  #checkov:skip=CKV2_AWS_62
-  #checkov:skip=CKV2_AWS_61
-  #checkov:skip=CKV_AWS_144
-  bucket = "opa-test-missing-tags-${random_id.suffix.hex}"
-
-  # Missing required tags: Project, Owner, Environment
-  # This will FAIL OPA but PASS SAST
+provider "aws" {
+  region = "us-east-1"
 }
 
-resource "aws_s3_bucket_server_side_encryption_configuration" "opa_test" {
-  bucket = aws_s3_bucket.opa_test.id
+# VIOLATION 1 & 2: TAGGING POLICIES
+# This resource violates 'policies/required_tags.rego':
+# - Missing 'CostCenter' tag
+# - 'Project' tag is empty
+# - 'Owner' tag is not a valid email address
+# - 'Environment' tag is 'testing' (Must be dev, staging, or prod)
+# checkov:skip=CKV2_AWS_61
+# checkov:skip=CKV_AWS_145
+# checkov:skip=CKV2_AWS_6
+# checkov:skip=CKV_AWS_144
+# checkov:skip=CKV_AWS_19
+resource "aws_s3_bucket" "violation_bucket" {
+  bucket = "policy-violation-bucket-example"
+
+  tags = {
+    Project     = ""              # Violation: Empty value
+    Owner       = "invalid-owner" # Violation: Invalid email format
+    Environment = "testing"       # Violation: Invalid environment value
+    # CostCenter tag is missing completely
+  }
+}
+
+# VIOLATION 3: S3 ENCRYPTION
+# This resource violates 'policies/s3_encryption.rego':
+# - Uses 'AES128' instead of required 'AES256' or 'aws:kms'
+# checkov:skip=CKV_AWS_19
+# trivy:ignore:AVD-AWS-0088
+# checkov:skip=CKV2_AWS_6
+resource "aws_s3_bucket_server_side_encryption_configuration" "violation_encryption" {
+  bucket = aws_s3_bucket.violation_bucket.id
 
   rule {
     apply_server_side_encryption_by_default {
-      sse_algorithm     = "aws:kms"
-      kms_master_key_id = aws_kms_key.s3.arn
+      sse_algorithm = "AES128" # Violation: Weak algorithm
     }
-    bucket_key_enabled = true
   }
-}
-
-resource "aws_s3_bucket_public_access_block" "opa_test" {
-  bucket = aws_s3_bucket.opa_test.id
-
-  block_public_acls       = true
-  block_public_policy     = true
-  ignore_public_acls      = true
-  restrict_public_buckets = true
-}
-
-resource "aws_s3_bucket_versioning" "opa_test" {
-  bucket = aws_s3_bucket.opa_test.id
-
-  versioning_configuration {
-    status = "Enabled"
-  }
-}
-
-resource "random_id" "suffix" {
-  byte_length = 4
 }
