@@ -341,9 +341,20 @@ jobs:
             mkdir -p "$test_dir"
             cp "$test_file" "$test_dir/main.tf"
 
-            # Create minimal provider.tf
-            echo 'terraform { required_providers { aws = { source = "hashicorp/aws", version = "~> 5.0" } } }' > "$test_dir/provider.tf"
-            echo 'provider "aws" { region = "us-east-1" }' >> "$test_dir/provider.tf"
+            # FIXED: Create provider.tf using multi-line heredoc for valid HCL syntax
+            cat > "$test_dir/provider.tf" <<EOF
+            terraform {
+              required_providers {
+                aws = {
+                  source  = "hashicorp/aws"
+                  version = "~> 5.0"
+                }
+              }
+            }
+            provider "aws" {
+              region = "us-east-1"
+            }
+            EOF
 
             # Generate Plan
             cd "$test_dir"
