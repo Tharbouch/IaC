@@ -318,12 +318,14 @@ jobs:
           test_failures=0
           test_successes=0
 
-          # Initialize test files section in JSON (read from terraform directory)
-          if [ -f terraform/opa-results.json ]; then
-            cp terraform/opa-results.json opa-results.json
+          # FIXED: Read opa-results.json from parent directory (root), not terraform/
+          if [ -f ../opa-results.json ]; then
+            cp ../opa-results.json opa-results.json
           else
             echo '{"production_code": {"policies": [], "summary": {"total_policies": 3, "policies_with_violations": 0, "total_violations": 0, "status": "passed"}}}' > opa-results.json
           fi
+
+          # Initialize test_files structure
           jq '.test_files = {"files": [], "summary": {"total_files": 0, "expected_violations_detected": 0, "missing_violations": 0, "status": "passed"}}' opa-results.json > opa-results.tmp && mv opa-results.tmp opa-results.json
 
           # Create a temporary directory for test plans
@@ -382,6 +384,7 @@ jobs:
                 # Test each policy
                 for policy in s3_encryption security_groups required_tags; do
                   package_path="terraform.${policy}"
+                  # FIXED: Path to policies is ../../../ relative to test_dir
                   out=$(opa eval --format=json --data ../../../policies/${policy}.rego --input tfplan.json "data.${package_path}.deny" 2>&1 || true)
 
                   # Parse JSON output to check if deny array has elements
@@ -400,9 +403,11 @@ jobs:
 
                   # Check if violations were found
                   if [ "$deny_count" -gt 0 ]; then
+                    # FIXED: Output to ../../test-policy-results.txt
                     echo "  ✅ $policy: $deny_count violation(s) detected (expected)" >> ../../test-policy-results.txt
                     test_successes=$((test_successes+1))
                   else
+                    # FIXED: Output to ../../test-policy-results.txt
                     echo "  ❌ $policy: No violations detected (unexpected for test file)" >> ../../test-policy-results.txt
                     test_failures=$((test_failures+1))
                     test_file_json=$(echo "$test_file_json" | jq '.status = "failed"')
@@ -417,7 +422,7 @@ jobs:
               test_file_json=$(echo "$test_file_json" | jq '.status = "error" | .error = "Could not generate plan"')
             fi
 
-            # Add test file to JSON results
+            # FIXED: Write to ../../opa-results.json
             jq ".test_files.files += [$test_file_json]" ../../opa-results.json > ../../opa-results.tmp && mv ../../opa-results.tmp ../../opa-results.json
 
             cd ../..
@@ -459,6 +464,9 @@ jobs:
                repository: "${{ github.repository }}"
              }' \
              opa-results.json > opa-results.tmp && mv opa-results.tmp opa-results.json
+
+          # FIXED: Move the updated JSON back to root so subsequent steps can find it
+          mv opa-results.json ../opa-results.json
 
       # -----------------------------------------------------------------------
       # Upload OPA Results as Artifact
