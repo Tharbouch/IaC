@@ -400,25 +400,25 @@ jobs:
 
                   # Check if violations were found
                   if [ "$deny_count" -gt 0 ]; then
-                    echo "  ✅ $policy: $deny_count violation(s) detected (expected)" >> ../../../test-policy-results.txt
+                    echo "  ✅ $policy: $deny_count violation(s) detected (expected)" >> ../../test-policy-results.txt
                     test_successes=$((test_successes+1))
                   else
-                    echo "  ❌ $policy: No violations detected (unexpected for test file)" >> ../../../test-policy-results.txt
+                    echo "  ❌ $policy: No violations detected (unexpected for test file)" >> ../../test-policy-results.txt
                     test_failures=$((test_failures+1))
                     test_file_json=$(echo "$test_file_json" | jq '.status = "failed"')
                   fi
                 done
               else
-                echo "  ⚠️ Could not generate plan JSON for $test_name" >> ../../../test-policy-results.txt
+                echo "  ⚠️ Could not generate plan JSON for $test_name" >> ../../test-policy-results.txt
                 test_file_json=$(echo "$test_file_json" | jq '.status = "error" | .error = "Could not generate plan JSON"')
               fi
             else
-              echo "  ⚠️ Could not generate plan for $test_name" >> ../../../test-policy-results.txt
+              echo "  ⚠️ Could not generate plan for $test_name" >> ../../test-policy-results.txt
               test_file_json=$(echo "$test_file_json" | jq '.status = "error" | .error = "Could not generate plan"')
             fi
 
             # Add test file to JSON results
-            jq ".test_files.files += [$test_file_json]" ../opa-results.json > ../opa-results.tmp && mv ../opa-results.tmp ../opa-results.json
+            jq ".test_files.files += [$test_file_json]" ../../opa-results.json > ../../opa-results.tmp && mv ../../opa-results.tmp ../../opa-results.json
 
             cd ../..
             echo "" >> test-policy-results.txt
