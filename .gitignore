@@ -186,8 +186,8 @@ yarn-error.log*
 # Documentation should be committed
 !docs/**
 
-# Test files should be committed
-!tests/**
+# Test files 
+tests/**
 
 # ============================================================================
 # NOTES
