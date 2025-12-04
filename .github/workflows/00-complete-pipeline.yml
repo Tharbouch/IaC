@@ -307,171 +307,110 @@ jobs:
           fi
 
       # -----------------------------------------------------------------------
-      # Test OPA Policies Against Test Files
+      # Test OPA Policies Against Test Files (FAIL ON VIOLATION)
       # -----------------------------------------------------------------------
       - name: Test OPA Policies Against Test Files
         working-directory: tests
-        if: always() # Run even if previous step failed
+        # REMOVED "if: always()" so the pipeline stops here if this step fails
         run: |
           echo "## 🧪 Testing OPA Policies Against Test Files" > test-policy-results.txt
           echo "" >> test-policy-results.txt
-          test_failures=0
-          test_successes=0
 
-          # FIXED: Read opa-results.json from parent directory (root), not terraform/
+          # 1. Initialize Global Failure Flag
+          any_violations_found=0
+
+          # Initialize JSON results structure
           if [ -f ../opa-results.json ]; then
             cp ../opa-results.json opa-results.json
           else
-            echo '{"production_code": {"policies": [], "summary": {"total_policies": 3, "policies_with_violations": 0, "total_violations": 0, "status": "passed"}}}' > opa-results.json
+            echo '{"production_code": {"policies": [], "summary": {"total_policies": 0, "status": "unknown"}}}' > opa-results.json
           fi
+          jq '.test_files = {"files": [], "summary": {"status": "pending"}}' opa-results.json > opa-results.tmp && mv opa-results.tmp opa-results.json
 
-          # Initialize test_files structure
-          jq '.test_files = {"files": [], "summary": {"total_files": 0, "expected_violations_detected": 0, "missing_violations": 0, "status": "passed"}}' opa-results.json > opa-results.tmp && mv opa-results.tmp opa-results.json
-
-          # Create a temporary directory for test plans
           mkdir -p test-plans
 
-          test_file_count=0
-
-          # Test each test file
+          # Loop through all .tf files
           for test_file in *.tf; do
-            if [ ! -f "$test_file" ]; then
-              continue
-            fi
+            if [ ! -f "$test_file" ]; then continue; fi
 
-            test_file_count=$((test_file_count+1))
             test_name=$(basename "$test_file" .tf)
             echo "### Testing: $test_name" >> test-policy-results.txt
 
-            # Create a temporary directory for this test
+            # Setup test environment
             test_dir="test-plans/${test_name}"
             mkdir -p "$test_dir"
-
-            # Copy test file and create a minimal Terraform setup
             cp "$test_file" "$test_dir/main.tf"
 
-            # Create a minimal provider.tf for the test
-            echo 'terraform {' > "$test_dir/provider.tf"
-            echo '  required_version = ">= 1.0"' >> "$test_dir/provider.tf"
-            echo '  required_providers {' >> "$test_dir/provider.tf"
-            echo '    aws = {' >> "$test_dir/provider.tf"
-            echo '      source  = "hashicorp/aws"' >> "$test_dir/provider.tf"
-            echo '      version = "~> 5.0"' >> "$test_dir/provider.tf"
-            echo '    }' >> "$test_dir/provider.tf"
-            echo '    random = {' >> "$test_dir/provider.tf"
-            echo '      source  = "hashicorp/random"' >> "$test_dir/provider.tf"
-            echo '      version = "~> 3.0"' >> "$test_dir/provider.tf"
-            echo '    }' >> "$test_dir/provider.tf"
-            echo '  }' >> "$test_dir/provider.tf"
-            echo '}' >> "$test_dir/provider.tf"
-            echo '' >> "$test_dir/provider.tf"
-            echo 'provider "aws" {' >> "$test_dir/provider.tf"
-            echo '  region = "us-east-1"' >> "$test_dir/provider.tf"
-            echo '}' >> "$test_dir/provider.tf"
+            # Create minimal provider.tf
+            echo 'terraform { required_providers { aws = { source = "hashicorp/aws", version = "~> 5.0" } } }' > "$test_dir/provider.tf"
+            echo 'provider "aws" { region = "us-east-1" }' >> "$test_dir/provider.tf"
 
-            # Generate Terraform plan for this test
+            # Generate Plan
             cd "$test_dir"
-            
-            # REMOVED /dev/null so we can see errors in the logs if it fails
-            echo "Running init for $test_name..."
-            terraform init -backend=false
-            
-            echo "Running plan for $test_name..."
-            terraform plan -out=tfplan.binary
+            echo "Running Terraform for $test_name..."
+            terraform init -backend=false > /dev/null
+            terraform plan -out=tfplan.binary > /dev/null
+            terraform show -json tfplan.binary > tfplan.json 2>/dev/null || true
 
-            # Initialize test file JSON structure
+            # Initialize file JSON
             test_file_json=$(jq -n --arg name "$test_name" --arg file "$test_file" '{name: $name, file: $file, policies: [], status: "passed"}')
 
-            if [ -f "tfplan.binary" ]; then
-              terraform show -json tfplan.binary > tfplan.json 2>/dev/null || true
+            if [ -f "tfplan.json" ]; then
+              # 2. Test ALL policies (do not stop early)
+              for policy in s3_encryption security_groups required_tags; do
+                package_path="terraform.${policy}"
+                out=$(opa eval --format=json --data ../../../policies/${policy}.rego --input tfplan.json "data.${package_path}.deny" 2>&1 || true)
+                
+                deny_count=$(echo "$out" | jq -r '.result[0].expressions[0].value | length' 2>/dev/null || echo "0")
+                violations=$(echo "$out" | jq -r '.result[0].expressions[0].value // []' 2>/dev/null || echo "[]")
 
-              if [ -f "tfplan.json" ]; then
-                # Test each policy
-                for policy in s3_encryption security_groups required_tags; do
-                  package_path="terraform.${policy}"
-                  # FIXED: Path to policies is ../../../ relative to test_dir
-                  out=$(opa eval --format=json --data ../../../policies/${policy}.rego --input tfplan.json "data.${package_path}.deny" 2>&1 || true)
+                # Add result to JSON
+                policy_result=$(jq -n \
+                  --arg policy "$policy" \
+                  --argjson count "$deny_count" \
+                  --argjson violations "$violations" \
+                  --arg status "$([ "$deny_count" -gt 0 ] && echo "failed" || echo "passed")" \
+                  '{name: $policy, violations_count: $count, status: $status, violations: $violations}')
+                
+                test_file_json=$(echo "$test_file_json" | jq ".policies += [$policy_result]")
 
-                  # Parse JSON output to check if deny array has elements
-                  deny_count=$(echo "$out" | jq -r '.result[0].expressions[0].value | length' 2>/dev/null || echo "0")
-                  violations=$(echo "$out" | jq -r '.result[0].expressions[0].value // []' 2>/dev/null || echo "[]")
-
-                  # Add policy result to test file JSON
-                  policy_result=$(jq -n \
-                    --arg policy "$policy" \
-                    --argjson count "$deny_count" \
-                    --argjson violations "$violations" \
-                    --arg status "$([ "$deny_count" -gt 0 ] && echo "passed" || echo "failed")" \
-                    '{name: $policy, violations_count: $count, status: $status, violations: $violations}')
-
-                  test_file_json=$(echo "$test_file_json" | jq ".policies += [$policy_result]")
-
-                  # Check if violations were found
-                  if [ "$deny_count" -gt 0 ]; then
-                    # FIXED: Output to ../../test-policy-results.txt
-                    echo "  ✅ $policy: $deny_count violation(s) detected (expected)" >> ../../test-policy-results.txt
-                    test_successes=$((test_successes+1))
-                  else
-                    # FIXED: Output to ../../test-policy-results.txt
-                    echo "  ❌ $policy: No violations detected (unexpected for test file)" >> ../../test-policy-results.txt
-                    test_failures=$((test_failures+1))
-                    test_file_json=$(echo "$test_file_json" | jq '.status = "failed"')
-                  fi
-                done
-              else
-                echo "  ⚠️ Could not generate plan JSON for $test_name" >> ../../test-policy-results.txt
-                test_file_json=$(echo "$test_file_json" | jq '.status = "error" | .error = "Could not generate plan JSON"')
-              fi
-            else
-              echo "  ⚠️ Could not generate plan for $test_name" >> ../../test-policy-results.txt
-              test_file_json=$(echo "$test_file_json" | jq '.status = "error" | .error = "Could not generate plan"')
+                # 3. Check for Violations
+                if [ "$deny_count" -gt 0 ]; then
+                  echo "❌ VIOLATION in $policy: Found $deny_count issue(s)" >> ../../test-policy-results.txt
+                  
+                  # Print detailed error to GitHub annotation
+                  echo "::error file=tests/$test_file::Policy '$policy' failed with $deny_count violations."
+                  
+                  # Mark global flag as failed, but CONTINUE loop
+                  any_violations_found=1
+                  test_file_json=$(echo "$test_file_json" | jq '.status = "failed"')
+                else
+                  echo "✅ $policy: Passed" >> ../../test-policy-results.txt
+                fi
+              done
             fi
-
-            # FIXED: Write to ../../opa-results.json
+            
+            # Save JSON for this file
             jq ".test_files.files += [$test_file_json]" ../../opa-results.json > ../../opa-results.tmp && mv ../../opa-results.tmp ../../opa-results.json
-
+            
             cd ../..
             echo "" >> test-policy-results.txt
           done
 
-          # Update test files summary
-          jq --argjson total "$test_file_count" \
-             --argjson successes "$test_successes" \
-             --argjson failures "$test_failures" \
-             '.test_files.summary.total_files = $total |
-              .test_files.summary.expected_violations_detected = $successes |
-              .test_files.summary.missing_violations = $failures |
-              .test_files.summary.status = (if $failures > 0 then "warning" else "passed" end)' \
-             opa-results.json > opa-results.tmp && mv opa-results.tmp opa-results.json
-
-          echo "### Test Summary" >> test-policy-results.txt
-          echo "- Expected violations detected: $test_successes" >> test-policy-results.txt
-          echo "- Missing violations (policies not working): $test_failures" >> test-policy-results.txt
-          echo "" >> test-policy-results.txt
-
+          # Output text results
           cat test-policy-results.txt
 
-          if [ "$test_failures" -gt 0 ]; then
-            echo "⚠️ Some OPA policies are not detecting violations in test files!" >&2
-            echo "This indicates the policies may need adjustment." >&2
-          fi
-
-          # Add metadata to JSON
-          jq --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-             --arg workflow "${{ github.workflow }}" \
-             --arg run_id "${{ github.run_id }}" \
-             --arg commit "${{ github.sha }}" \
-             '.metadata = {
-               timestamp: $timestamp,
-               workflow: $workflow,
-               run_id: $run_id,
-               commit: $commit,
-               repository: "${{ github.repository }}"
-             }' \
-             opa-results.json > opa-results.tmp && mv opa-results.tmp opa-results.json
-
-          # FIXED: Move the updated JSON back to root so subsequent steps can find it
+          # Move JSON back to root
           mv opa-results.json ../opa-results.json
+
+          # 4. Final Fail Decision
+          if [ "$any_violations_found" -eq 1 ]; then
+            echo "🚨 CRITICAL: Violations detected in test files."
+            echo "Blocking pipeline as requested."
+            exit 1
+          else
+            echo "✅ No violations found in any policy."
+          fi
 
       # -----------------------------------------------------------------------
       # Upload OPA Results as Artifact

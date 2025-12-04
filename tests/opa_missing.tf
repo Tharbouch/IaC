@@ -1,16 +1,15 @@
-# This file is self-contained for OPA testing.
-# It intentionally violates policies to ensure OPA detects them.
+# This file contains INTENTIONAL violations to test the OPA policies.
+# We want the pipeline to DETECT these and BLOCK (turn Red).
 
 # NOTE: Provider configuration is handled by the pipeline. Do NOT add a provider block here.
 
 # ============================================================================
-# VIOLATION 1 & 2: TAGGING POLICIES
+# VIOLATION SET 1: TAGGING POLICIES (policies/required_tags.rego)
 # ============================================================================
-# Violates 'policies/required_tags.rego':
-# - Missing 'CostCenter' tag
-# - 'Project' tag is empty
-# - 'Owner' tag is not a valid email address
-# - 'Environment' tag is 'testing' (Invalid)
+# 1. Missing 'CostCenter' tag (Recommended)
+# 2. 'Project' tag is empty (Required - Invalid)
+# 3. 'Owner' tag is not a valid email (Required - Invalid)
+# 4. 'Environment' tag is 'testing' (Required - Invalid)
 
 # checkov:skip=CKV2_AWS_61: "Intentional violation for OPA testing"
 # checkov:skip=CKV_AWS_145: "Intentional violation for OPA testing"
@@ -29,44 +28,35 @@ resource "aws_s3_bucket" "violation_bucket" {
 }
 
 # ============================================================================
-# VIOLATION 3: S3 ENCRYPTION
+# VIOLATION SET 2: S3 ENCRYPTION (policies/s3_encryption.rego)
 # ============================================================================
-# We cannot use 'AES128' because Terraform v5+ crashes with an error before OPA runs.
-# Instead, we OMIT the encryption resource entirely.
-# This triggers the OPA rule: "S3 bucket ... does not have encryption enabled"
+# 5. Missing Encryption Configuration
+# We omit the encryption resource to trigger the "must have encryption" policy.
 
 # checkov:skip=CKV_AWS_19: "Intentional violation for OPA testing"
 # trivy:ignore:AVD-AWS-0088: "Intentional violation for OPA testing"
 # checkov:skip=CKV2_AWS_6: "Intentional violation for OPA testing"
 
-# RESOURCE COMMENTED OUT TO TRIGGER "MISSING ENCRYPTION" VIOLATION:
-# resource "aws_s3_bucket_server_side_encryption_configuration" "violation_encryption" {
-#   bucket = aws_s3_bucket.violation_bucket.id
-#   rule {
-#     apply_server_side_encryption_by_default {
-#       sse_algorithm = "AES128" # This crashes Terraform!
-#     }
-#   }
-# }
+# (Resource omitted intentionally to trigger violation)
 
 # ============================================================================
-# VIOLATION 4: SECURITY GROUPS
+# VIOLATION SET 3: SECURITY GROUPS (policies/security_groups.rego)
 # ============================================================================
-# Violates 'policies/security_groups.rego':
-# - SSH (22) open to 0.0.0.0/0
+# 6. SSH (22) open to 0.0.0.0/0 (Critical)
+# 7. Missing rule description
 
 # checkov:skip=CKV_AWS_24: "Intentional violation: SSH open to world"
 # checkov:skip=CKV_AWS_260: "Intentional violation: Security group description"
 resource "aws_security_group" "violation_sg" {
   name        = "violation-sg"
   description = "Security group with violations"
-  vpc_id      = "vpc-12345678" # Dummy VPC ID for planning
+  vpc_id      = "vpc-12345678" # Dummy VPC ID
 
   ingress {
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"] # Violation: SSH open to world
-    description = "SSH access"
+    # Violation: Missing description
   }
 }
